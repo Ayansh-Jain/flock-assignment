@@ -1,0 +1,146 @@
+{
+  "status": 200,
+  "headers": {
+    "alt-svc": "h3=\":443\"; ma=2592000",
+    "content-length": "231658",
+    "content-type": "application/json",
+    "date": "Tue, 27 Oct 2026 22:06:42 GMT"
+  },
+  "body": {
+    "data": [
+      {
+        "meterId": "J100000",
+        "serialNo": "SE33962",
+        "make": "HPL",
+        "phaseType": "single",
+        "installStatus": "Decommissioned",
+        "installType": "Whole Current",
+        "build": "legacy",
+        "dtCode": "DT-001",
+        "hierarchy": {
+          "zone": {
+            "name": "Jaipur Zone 1",
+            "code": "Z-01"
+          },
+          "circle": {
+            "name": "Circle 1",
+            "code": "C-01"
+          },
+          "division": {
+            "name": "Division 1",
+            "code": "D-01"
+          },
+          "subdivision": {
+            "name": "Subdivision 1",
+            "code": "SD-01"
+          },
+          "substation": {
+            "name": "Substation 1",
+            "code": "SS-01"
+          },
+          "feeder": {
+            "name": "Feeder 1",
+            "code": "F-001"
+          },
+          "dt": {
+            "name": "Malviya Nagar DT 1",
+            "code": "DT-001"
+          }
+        },
+        "geo": {
+          "lat": 26.938961002479868,
+          "lng": 75.83095696146852
+        }
+      },
+      {
+        "meterId": "J100001",
+        "serialNo": "GE84132",
+        "make": "L&T",
+        "phaseType": "single",
+        "installStatus": "Installed",
+        "installType": "CT Operated",
+        "build": "legacy",
+        "dtCode": "DT-002",
+        "hierarchy": {
+          "zone": {
+            "name": "Jaipur Zone 2",
+            "code": "Z-02"
+          },
+          "circle": {
+            "name": "Circle 2",
+            "code": "C-02"
+          },
+          "division": {
+            "name": "Division 2",
+            "code": "D-02"
+          },
+          "subdivision": {
+            "name": "Subdivision 2",
+            "code": "SD-02"
+          },
+          "substation": {
+            "name": "Substation 2",
+            "code": "SS-02"
+          },
+          "feeder": {
+            "name": "Feeder 2",
+            "code": "F-002"
+          },
+          "dt": {
+            "name": "Mansarovar DT 2",
+            "code": "DT-002"
+          }
+        },
+        "geo": {
+          "lat": 26.822136543835608,
+          "lng": 75.90718190602279
+        }
+      },
+      {
+        "meterId": "J100002",
+        "serialNo": "AL28136",
+        "make": "L&T",
+        "phaseType": "single",
+        "installStatus": "Installed",
+        "installType": "CT Operated",
+        "build": "legacy",
+        "dtCode": "DT-003",
+        "hierarchy": {
+          "zone": {
+            "name": "Jaipur Zone 3",
+            "code": "Z-03"
+          },
+          "circle": {
+            "name": "Circle 3",
+            "code": "C-03"
+          },
+          "division": {
+            "name": "Division 3",
+            "code": "D-03"
+          },
+          "subdivision": {
+            "name": "Subdivision 3",
+            "code": "SD-03"
+          },
+          "substation": {
+            "name": "Substation 3",
+            "code": "SS-03"
+          },
+          "feeder": {
+            "name": "Feeder 3",
+            "code": "F-003"
+          },
+          "dt": {
+            "name": "Vaishali DT 3",
+            "code": "DT-003"
+          }
+        },
+        "geo": {
+          "lat": 26.840224163401967,
+          "lng": 75.71461868999545
+        }
+      }
+    ],
+    "total": 403
+  }
+}
