@@ -58,3 +58,30 @@ All of these are mine and open to review; none were specified by the portal.
 - **Labelled assumptions kept:** 404 -> `PortalNotFound`, 403 -> `PortalAuthError`; `process.loadEnvFile` allowed in the lint config instead of raising `engines`.
 - **Documentation to write:** PROTOCOL.md must explain that the energy series gives 7 daily totals (24-30 Jun) because its first reading is 23:30 on 23 Jun.
 - **Housekeeping:** `notes/` added to `.prettierignore` so prose is not reflowed. Existing notes were not rewritten.
+
+## Phase 3 (service layer, routes, openapi.json)
+
+Mine unless stated; open to review.
+
+- **limit/offset onto portal pages.** The portal pages by 20 (Observed for search and dts). The service always fetches upstream page 1 first (it carries `total` and lets us check `pageSize === 20`), then only the pages the window needs, never beyond the last page, because the portal's behaviour past the end was never observed. Costs: an offset past the end is 1 upstream call; offset >= 20 costs one extra call (page 1). A changed upstream page size raises `PortalParseError` instead of mis-slicing. limit default 50, max 200 (at most 11 upstream pages).
+- **Response wrapper is `{ data, total, limit, offset, fetched_at }`**, not `{ page, pageSize }` as in the brief, because our API pages by limit/offset and echoing page numbers would mislead.
+- **Field names follow the parsers**, so `geo` is `{ latitude, longitude }` (the brief said `{lat, lng}`; the export's `lat/lng` is normalised by the parser). `fetched_at` and `request_id` are snake_case as specified, so naming is deliberately mixed: camelCase for portal-derived fields, snake_case for fields we add. Easy to unify later.
+- **Daily series** carries `kvah` as well as `kwh` (the parser returns both), plus `skippedDays` (count) and `skipped` (`{date, reason}` list), and the service logs a warning when days are skipped.
+- **installType, build, hierarchy are `null` (not omitted)** when the meter is not in the export, so the response shape is stable.
+- **Meter detail = 4 upstream calls and no cache:** search (exact-id check), `/geo`, `/portal/keys` and the full export pull. The export (~230 KB) is fetched on every detail request until the cache extension exists; `loadExportIndex()` in src/service.js is the seam. Detail latency is therefore the slowest in the API.
+- **Export outage degrades, auth does not.** If the export fails with `PortalUnavailable` or `PortalParseError`, the detail still returns with `hierarchy: null` and a warning is logged (the caller cannot tell why it is null). A `PortalAuthError` still fails the request.
+- **Export paging in the service:** bounded to 10 pages, stops when rows seen >= `total`, on an empty page, or on a repeated page (no new meter ids), warning "export may be incomplete" in the last two cases. Bad rows are skipped and logged as count + 5 samples (Phase 2 decision).
+- **Unknown meter** is found via search, matching the id exactly and case-sensitively (search is partial). It is checked on the detail route only; `/consumption` and `/consumption/daily` rely on the portal's 404 for `/energy`, which is still an assumption (never observed).
+- **Error mapping** (single shape `{ error: { code, message, request_id } }`, messages are fixed text, nothing from upstream): validation -> 400 `invalid_request` naming the field; `PortalNotFound` -> 404 `meter_not_found`; unknown route -> 404 `route_not_found`; `PortalUnavailable` whose cause is a timeout -> 504 `portal_timeout`; other `PortalUnavailable` -> 502 `portal_unavailable`; `PortalParseError` -> 502 `portal_bad_response`; other `PortalError` -> 502 `portal_error`; `PortalAuthError` -> 503 `portal_auth_failed` (our credentials, not the caller's); anything else -> 500 `internal_error`. Logged at warn for 4xx and error for 5xx; stack traces appear only in logs.
+- **/health always returns 200** while the process is up; `status: "degraded"` / `portal: "unreachable"` reports the portal. It makes one cheap read-only call to the portal (dts page 1) per request, so do not point a high-frequency prober at it without adding a cache.
+- **Intentional skip: no authentication on our API.** Anyone who can reach the port can read portal data through our credentials. It binds to 127.0.0.1 by default. In production: API key or OAuth at a gateway, TLS termination, per-client rate limits, and request quotas so the shared portal is not hammered.
+- **No CORS** until a web client needs it.
+- **Config:** `NODE_ENV` added to the schema (default `production`); pino-pretty is used only when it is `development`. The `dev` script is now `node --watch src/server.js` (set `NODE_ENV=development` in `.env` for pretty logs).
+- **OpenAPI:** components are named by schema `$id` via swagger's `refResolver`; `src/openapi.js` generates the document and is shared by `scripts/export-openapi.js` and `test/openapi.test.js`. `openapi.json` is generated, so it is in `.prettierignore`.
+- **Meter id parameter** must match `^[A-Za-z0-9_-]{1,32}$` (Assumed from `J100001`); other ids get 400 without touching the portal.
+
+## Phase 3 follow-up (author-approved Phase 3, memo folded in)
+
+- **Export index memo (supersedes "no cache" for meter detail above).** `loadExportIndex()` in src/service.js now keeps ONE in-process entry for 60 s (`EXPORT_MEMO_TTL_MS`, overridable via `exportTtlMs`). Concurrent callers share a single pull; a failed pull is never kept; there is no invalidation and nothing shared across processes, so data can be up to 60 s stale (and `hierarchy` for a changed meter likewise). Memory is bounded by the dataset (at most 10 export pages). Effect: after the first detail request in a minute, detail costs search + `/geo` only. The general cache (per-endpoint, LRU, freshness policy) remains a Phase 5 extension.
+- **README must say** that `/health` makes a live portal call (dts page 1) on every request, so a fast prober should not be pointed at it. Phase 4 to-do.
+- **Also for Phase 4 docs:** the 7-day / 23:30 explanation in PROTOCOL.md; the unexercised shutdown path; the unobserved portal behaviours (past-the-end page, `/energy` 404 for unknown meter, 403).

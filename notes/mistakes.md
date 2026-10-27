@@ -15,3 +15,11 @@ _None yet._
 - **Dead end, tooling:** a large multi-file shell heredoc failed with a quoting error and wrote nothing; I switched to writing files one at a time. No impact on the repo.
 - **ESLint:** `n/no-unsupported-features` flagged `process.loadEnvFile` (experimental until Node 22.21); resolved with `allowExperimental` rather than raising `engines`.
 - **Process (Phase 2 review):** my first parser version made one bad export row fail the whole page, and silently dropped skipped days. The author's review changed both (see decisions.md). Lesson: for bulk paths, decide up front what happens to bad rows, and never skip silently.
+
+## Phase 3
+
+- **Dead end, OpenAPI names:** swagger first emitted components as `def-0 ... def-14`. Fixed with the `refResolver` option (names from `$id`).
+- **Dead end, OpenAPI descriptions:** `$ref` responses showed "Default Response". A `description` sibling next to `$ref` works in @fastify/swagger, so it is set per route.
+- **Test mistakes (mine):** two wrong expectations in my own tests (a `q` match count off by one; comparing `request.query`, which has a null prototype, with a plain object). Both were test bugs, not code bugs.
+- **Tooling:** a large shell command mixing several heredocs failed with a quoting error again (same as Phase 2); I wrote files one at a time instead.
+- **Not verified:** graceful shutdown on SIGINT/SIGTERM and the unhandledRejection path were written but not exercised (the server was smoke-tested on Windows with dummy credentials hitting only validation, 404 and /docs routes, then killed).

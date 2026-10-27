@@ -1,0 +1,1164 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Urja Meter API",
+    "version": "0.1.0",
+    "description": "A clean, read-only JSON API in front of the legacy \"Urja Meter Ops\" portal. Data is fetched from the portal on request (no caching yet); every response carries `fetched_at`. Assumptions: portal timestamps are IST (+05:30); energy registers are kWh / kVAh. This API has no authentication of its own; run it on a trusted network."
+  },
+  "components": {
+    "schemas": {
+      "MeterSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "meterId",
+          "serialNo",
+          "make",
+          "phaseType",
+          "installStatus",
+          "dtCode"
+        ],
+        "properties": {
+          "meterId": {
+            "type": "string",
+            "description": "Portal meter ID.",
+            "example": "J100001"
+          },
+          "serialNo": {
+            "type": "string",
+            "description": "Manufacturer serial number. Opaque; may contain \"&\". Its prefix is unrelated to make."
+          },
+          "make": {
+            "type": "string",
+            "description": "Meter manufacturer as the portal spells it."
+          },
+          "phaseType": {
+            "type": "string",
+            "description": "Phase type as the portal reports it, e.g. single, three."
+          },
+          "installStatus": {
+            "type": "string",
+            "description": "Install status as the portal reports it, e.g. Installed, Decommissioned, Faulty."
+          },
+          "dtCode": {
+            "type": "string",
+            "description": "Code of the distribution transformer (DT) the meter hangs off."
+          }
+        }
+      },
+      "Geo": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "latitude",
+          "longitude"
+        ],
+        "properties": {
+          "latitude": {
+            "type": "number",
+            "minimum": -90,
+            "maximum": 90,
+            "description": "Degrees, WGS84 (assumed)."
+          },
+          "longitude": {
+            "type": "number",
+            "minimum": -180,
+            "maximum": 180,
+            "description": "Degrees, WGS84 (assumed)."
+          }
+        }
+      },
+      "HierarchyNode": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "code"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          }
+        }
+      },
+      "Hierarchy": {
+        "type": "object",
+        "nullable": true,
+        "description": "Position in the network, top to bottom. null when the meter is not in the portal export.",
+        "additionalProperties": false,
+        "required": [
+          "zone",
+          "circle",
+          "division",
+          "subdivision",
+          "substation",
+          "feeder",
+          "dt"
+        ],
+        "properties": {
+          "zone": {
+            "$ref": "#/components/schemas/HierarchyNode"
+          },
+          "circle": {
+            "$ref": "#/components/schemas/HierarchyNode"
+          },
+          "division": {
+            "$ref": "#/components/schemas/HierarchyNode"
+          },
+          "subdivision": {
+            "$ref": "#/components/schemas/HierarchyNode"
+          },
+          "substation": {
+            "$ref": "#/components/schemas/HierarchyNode"
+          },
+          "feeder": {
+            "$ref": "#/components/schemas/HierarchyNode"
+          },
+          "dt": {
+            "$ref": "#/components/schemas/HierarchyNode"
+          }
+        }
+      },
+      "Meter": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "meterId",
+          "serialNo",
+          "make",
+          "phaseType",
+          "installStatus",
+          "dtCode",
+          "installType",
+          "build",
+          "geo",
+          "hierarchy",
+          "fetched_at"
+        ],
+        "properties": {
+          "meterId": {
+            "type": "string",
+            "description": "Portal meter ID.",
+            "example": "J100001"
+          },
+          "serialNo": {
+            "type": "string",
+            "description": "Manufacturer serial number. Opaque; may contain \"&\". Its prefix is unrelated to make."
+          },
+          "make": {
+            "type": "string",
+            "description": "Meter manufacturer as the portal spells it."
+          },
+          "phaseType": {
+            "type": "string",
+            "description": "Phase type as the portal reports it, e.g. single, three."
+          },
+          "installStatus": {
+            "type": "string",
+            "description": "Install status as the portal reports it, e.g. Installed, Decommissioned, Faulty."
+          },
+          "dtCode": {
+            "type": "string",
+            "description": "Code of the distribution transformer (DT) the meter hangs off."
+          },
+          "installType": {
+            "type": "string",
+            "nullable": true,
+            "description": "e.g. \"Whole Current\", \"CT Operated\". null when the meter is not in the export."
+          },
+          "build": {
+            "type": "string",
+            "nullable": true,
+            "description": "Meter build, e.g. \"legacy\". null when the meter is not in the export."
+          },
+          "geo": {
+            "$ref": "#/components/schemas/Geo"
+          },
+          "hierarchy": {
+            "$ref": "#/components/schemas/Hierarchy"
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When this service fetched the data from the portal (UTC, ISO 8601)."
+          }
+        }
+      },
+      "MeterList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "total",
+          "limit",
+          "offset",
+          "fetched_at"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MeterSummary"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Total matching records upstream."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size requested (echoed)."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Zero-based offset requested (echoed)."
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When this service fetched the data from the portal (UTC, ISO 8601)."
+          }
+        }
+      },
+      "ConsumptionReading": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "timestamp",
+          "kwh",
+          "kvah",
+          "voltR"
+        ],
+        "properties": {
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "30-minute reading time, ISO 8601 with +05:30. The portal sends no zone; IST is assumed."
+          },
+          "kwh": {
+            "type": "number",
+            "description": "Cumulative active energy register. Unit assumed kWh (the portal gives none)."
+          },
+          "kvah": {
+            "type": "number",
+            "description": "Cumulative apparent energy register. Unit assumed kVAh (the portal gives none)."
+          },
+          "voltR": {
+            "type": "number",
+            "description": "R-phase voltage. Only this phase is available."
+          }
+        }
+      },
+      "ConsumptionSeries": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "meterId",
+          "data",
+          "fetched_at"
+        ],
+        "properties": {
+          "meterId": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConsumptionReading"
+            }
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When this service fetched the data from the portal (UTC, ISO 8601)."
+          }
+        }
+      },
+      "DailyConsumption": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "date",
+          "kwh",
+          "kvah"
+        ],
+        "properties": {
+          "date": {
+            "type": "string",
+            "format": "date",
+            "description": "IST calendar day."
+          },
+          "kwh": {
+            "type": "number",
+            "description": "Last kWh register of the day minus the previous day's. Unit assumed kWh."
+          },
+          "kvah": {
+            "type": "number",
+            "description": "Same for the kVAh register. Unit assumed kVAh."
+          }
+        }
+      },
+      "SkippedDay": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "date",
+          "reason"
+        ],
+        "properties": {
+          "date": {
+            "type": "string",
+            "format": "date"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "incomplete_day",
+              "missing_previous_day",
+              "register_decreased"
+            ],
+            "description": "Why no total was reported. register_decreased means the cumulative register went backwards (reset or meter swap)."
+          }
+        }
+      },
+      "DailyConsumptionSeries": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "meterId",
+          "data",
+          "skippedDays",
+          "skipped",
+          "fetched_at"
+        ],
+        "properties": {
+          "meterId": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DailyConsumption"
+            }
+          },
+          "skippedDays": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of anomalous days left out (see skipped). The first day, which only anchors the next, and a final day that ends before 23:30 are expected and not counted."
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkippedDay"
+            }
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When this service fetched the data from the portal (UTC, ISO 8601)."
+          }
+        }
+      },
+      "Transformer": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "name",
+          "feederCode",
+          "capacityKva"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "DT-001"
+          },
+          "name": {
+            "type": "string"
+          },
+          "feederCode": {
+            "type": "string"
+          },
+          "capacityKva": {
+            "type": "number",
+            "description": "Rated capacity in kVA."
+          }
+        }
+      },
+      "TransformerList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "total",
+          "limit",
+          "offset",
+          "fetched_at"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Transformer"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Total matching records upstream."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size requested (echoed)."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Zero-based offset requested (echoed)."
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When this service fetched the data from the portal (UTC, ISO 8601)."
+          }
+        }
+      },
+      "Health": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "portal",
+          "fetched_at"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "degraded"
+            ],
+            "description": "degraded = this service is up but the portal is not."
+          },
+          "portal": {
+            "type": "string",
+            "enum": [
+              "reachable",
+              "unreachable"
+            ]
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When this service fetched the data from the portal (UTC, ISO 8601)."
+          }
+        }
+      },
+      "ErrorDetail": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "message",
+          "request_id"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable machine-readable code, e.g. meter_not_found."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable explanation. Never contains upstream bodies."
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Matches the X-Request-ID response header."
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Service and portal health",
+        "tags": [
+          "health"
+        ],
+        "description": "Always HTTP 200 while this service is up. Makes one cheap read-only call to the portal, so it reports portal reachability (status degraded when the portal is not).",
+        "responses": {
+          "200": {
+            "description": "Health status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/meters": {
+      "get": {
+        "summary": "List meters",
+        "tags": [
+          "meters"
+        ],
+        "description": "Meters from the portal search, which is the source of truth for the meter list. `q` is a partial match on meter ID or serial number. limit/offset are mapped onto the portal's 20-row pages.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "description": "Partial match on meterId or serialNo."
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "description": "Maximum records to return."
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "description": "Zero-based index of the first record to return."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of meters.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeterList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (code invalid_request).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Invalid request (code invalid_request).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The portal failed or returned something unreadable (portal_unavailable, portal_bad_response).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "The portal failed or returned something unreadable (portal_unavailable, portal_bad_response).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This service could not log in to the portal (portal_auth_failed).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "This service could not log in to the portal (portal_auth_failed).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The portal timed out (portal_timeout).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "The portal timed out (portal_timeout).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/meters/{meterId}": {
+      "get": {
+        "summary": "Meter detail",
+        "tags": [
+          "meters"
+        ],
+        "description": "Search row plus location. installType, build and hierarchy come from the portal export and are null when the meter is not in it (or the export is unavailable).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,32}$"
+            },
+            "in": "path",
+            "name": "meterId",
+            "required": true,
+            "description": "Portal meter ID, e.g. J100001."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The meter.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Meter"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (code invalid_request).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Invalid request (code invalid_request).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown meter or route (meter_not_found, route_not_found).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unknown meter or route (meter_not_found, route_not_found).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The portal failed or returned something unreadable (portal_unavailable, portal_bad_response).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "The portal failed or returned something unreadable (portal_unavailable, portal_bad_response).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This service could not log in to the portal (portal_auth_failed).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "This service could not log in to the portal (portal_auth_failed).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The portal timed out (portal_timeout).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "The portal timed out (portal_timeout).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/meters/{meterId}/consumption": {
+      "get": {
+        "summary": "Raw 30-minute readings",
+        "tags": [
+          "consumption"
+        ],
+        "description": "About 8 days of 30-minute readings, oldest first. kwh and kvah are cumulative registers (units assumed kWh and kVAh). Timestamps are IST (+05:30), an assumption: the portal sends none.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,32}$"
+            },
+            "in": "path",
+            "name": "meterId",
+            "required": true,
+            "description": "Portal meter ID, e.g. J100001."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Raw readings, oldest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsumptionSeries"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (code invalid_request).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Invalid request (code invalid_request).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown meter or route (meter_not_found, route_not_found).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unknown meter or route (meter_not_found, route_not_found).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The portal failed or returned something unreadable (portal_unavailable, portal_bad_response).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "The portal failed or returned something unreadable (portal_unavailable, portal_bad_response).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This service could not log in to the portal (portal_auth_failed).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "This service could not log in to the portal (portal_auth_failed).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The portal timed out (portal_timeout).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "The portal timed out (portal_timeout).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/meters/{meterId}/consumption/daily": {
+      "get": {
+        "summary": "Daily consumption totals",
+        "tags": [
+          "consumption"
+        ],
+        "description": "Per IST day: last register reading of the day minus the previous day's. The first reading is at 23:30, so the first day only anchors the next one and about 7 totals result. Days with a gap, an early end, or a register that went backwards (reset or meter swap) are left out and counted in skippedDays.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,32}$"
+            },
+            "in": "path",
+            "name": "meterId",
+            "required": true,
+            "description": "Portal meter ID, e.g. J100001."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Daily totals and skipped days.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DailyConsumptionSeries"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (code invalid_request).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Invalid request (code invalid_request).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown meter or route (meter_not_found, route_not_found).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unknown meter or route (meter_not_found, route_not_found).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The portal failed or returned something unreadable (portal_unavailable, portal_bad_response).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "The portal failed or returned something unreadable (portal_unavailable, portal_bad_response).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This service could not log in to the portal (portal_auth_failed).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "This service could not log in to the portal (portal_auth_failed).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The portal timed out (portal_timeout).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "The portal timed out (portal_timeout).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/transformers": {
+      "get": {
+        "summary": "List distribution transformers",
+        "tags": [
+          "transformers"
+        ],
+        "description": "Distribution transformers (DTs) from the portal, with their feeder and capacity.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "description": "Maximum records to return."
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "description": "Zero-based index of the first record to return."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of transformers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransformerList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (code invalid_request).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Invalid request (code invalid_request).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The portal failed or returned something unreadable (portal_unavailable, portal_bad_response).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "The portal failed or returned something unreadable (portal_unavailable, portal_bad_response).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This service could not log in to the portal (portal_auth_failed).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "This service could not log in to the portal (portal_auth_failed).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The portal timed out (portal_timeout).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "The portal timed out (portal_timeout).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "meters",
+      "description": "Meter list and detail"
+    },
+    {
+      "name": "consumption",
+      "description": "Energy readings and daily totals"
+    },
+    {
+      "name": "transformers",
+      "description": "Distribution transformers"
+    },
+    {
+      "name": "health",
+      "description": "Service health"
+    }
+  ]
+}

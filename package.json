@@ -1,18 +1,19 @@
 {
   "name": "urja-meter-api",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "dev": "node --watch src/server.js | pino-pretty",
+    "dev": "node --watch src/server.js",
     "start": "node src/server.js",
     "test": "node --test \"test/**/*.test.js\"",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "openapi": "node scripts/export-openapi.js",
     "capture-fixtures": "node --env-file=.env scripts/capture-fixtures.js"
   },
   "dependencies": {

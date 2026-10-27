@@ -26,6 +26,11 @@ export default [
     rules: { 'no-console': 'error' },
   },
   {
+    // The process entry point owns exit codes (graceful shutdown, fail-fast on bad config).
+    files: ['src/server.js'],
+    rules: { 'n/no-process-exit': 'off' },
+  },
+  {
     files: ['scripts/**/*.js'],
     rules: { 'no-console': 'off', 'n/no-process-exit': 'off' },
   },
