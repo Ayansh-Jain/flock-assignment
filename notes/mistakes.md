@@ -27,3 +27,13 @@ Nothing logged here. (The one real Phase 1 slip — claiming the energy data was
 
 - **I corrupted my own notes file.** A scripted edit of protocol-notes.md turned the literal `"\n"` in the signing message into an actual line break. I spotted it while writing PROTOCOL.md and fixed it by hand, then wrote PROTOCOL.md from the repaired version.
 - **Windows line endings (caught in the audit).** Git warned it would convert `openapi.json` to CRLF on checkout, which would have broken the OpenAPI drift test and `prettier --check` on Windows. Added a `.gitattributes` (`* text=auto eol=lf`) to force LF.
+## Phase 5B
+
+- A blank-code test failed because I forgot that an unplaced meter leaves the transformer list pointing at a DT with no meters, so `transformer_without_meters` also fired. The code was right and the test expectation was wrong; fixed the test.
+- My first README/PROTOCOL table edits were not Prettier-formatted, so `format:check` failed; fixed with `prettier --write` (whitespace/table alignment only).
+
+## Phase 5A
+
+- My first batch of patches was a single huge shell command with nested heredocs; the shell rejected it with a quoting error and applied none of it. I re-did the edits through a script file instead.
+- The first index-API test run failed with "unable to open database file": the test created the database before its parent directory existed. The service creates the directory itself; the test setup did not. I made the test create it and added a separate test for the service creating a missing directory.
+- A comment in the radius test described a "box corner" case that the assertion does not exercise. I corrected the comment rather than leave it misleading.

@@ -16,6 +16,7 @@ const schema = {
       enum: ['development', 'production', 'test'],
       default: 'production',
     },
+    DB_PATH: { type: 'string', minLength: 1, default: 'data/urja.db' },
     HOST: { type: 'string', default: '127.0.0.1' },
     PORT: { type: 'integer', minimum: 0, maximum: 65535, default: 3000 },
     LOG_LEVEL: {
@@ -46,7 +47,7 @@ function loadEnvFileIfPresent() {
  * @returns {Readonly<{
  *   PORTAL_BASE_URL: string, PORTAL_USERNAME: string, PORTAL_PASSWORD: string,
  *   REQUEST_TIMEOUT_MS: number, MAX_CONCURRENCY: number, MAX_RETRIES: number,
- *   NODE_ENV: string, HOST: string, PORT: number, LOG_LEVEL: string }>}
+ *   NODE_ENV: string, DB_PATH: string, HOST: string, PORT: number, LOG_LEVEL: string }>}
  */
 export function loadConfig(overrides) {
   if (!overrides) loadEnvFileIfPresent();

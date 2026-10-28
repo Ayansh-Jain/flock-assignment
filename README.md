@@ -6,7 +6,7 @@ If you just want to see what it returns, jump to [Sample requests](#sample-reque
 
 ## Quick start
 
-You'll need Node.js 22 or newer, npm, and the portal username and password (not included in this repo).
+You'll need Node.js 22.13 or newer, npm, and the portal username and password (not included in this repo).
 
 ```bash
 npm ci
@@ -137,19 +137,27 @@ Every error looks the same, and the `request_id` matches the `X-Request-ID` head
 
 ## API overview
 
-| Method | Path                                     | Purpose                                                         |
-| ------ | ---------------------------------------- | --------------------------------------------------------------- |
-| GET    | `/health`                                | Service status and whether the portal is reachable              |
-| GET    | `/v1/meters?q&limit&offset`              | List or search meters (`limit` 1-200, default 50)               |
-| GET    | `/v1/meters/{meterId}`                   | Meter detail: nameplate, location, network hierarchy            |
-| GET    | `/v1/meters/{meterId}/consumption`       | Raw 30-minute readings (cumulative kWh / kVAh, R-phase voltage) |
-| GET    | `/v1/meters/{meterId}/consumption/daily` | Derived daily totals plus the count of skipped days             |
-| GET    | `/v1/transformers?limit&offset`          | Distribution transformers with feeder and capacity              |
+| Method | Path                                                                           | Purpose                                                                      |
+| ------ | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| GET    | `/health`                                                                      | Service status and whether the portal is reachable                           |
+| GET    | `/v1/meters?q&limit&offset`                                                    | List or search meters live from the portal (`limit` 1-200, default 50)       |
+| GET    | `/v1/meters?make&phaseType&installStatus&installType&build&dtCode&zone&feeder` | **Index-backed** filters (any combination, plus `q`); needs `npm run sync`   |
+| GET    | `/v1/meters/near?lat&lon&radius_km`                                            | **Index-backed** meters near a point, nearest first, with `distance_km`      |
+| GET    | `/v1/sync/status`                                                              | When the local index was last synced, row counts, last run                   |
+| GET    | `/v1/meters/{meterId}`                                                         | Meter detail: nameplate, location, network hierarchy                         |
+| GET    | `/v1/meters/{meterId}/consumption`                                             | Raw 30-minute readings (cumulative kWh / kVAh, R-phase voltage)              |
+| GET    | `/v1/meters/{meterId}/consumption/daily`                                       | Derived daily totals plus the count of skipped days                          |
+| GET    | `/v1/transformers?limit&offset`                                                | Distribution transformers with feeder and capacity                           |
+| GET    | `/v1/network`                                                                  | Network zones with child and meter counts                                    |
+| GET    | `/v1/network/{nodeCode}`                                                       | A node at any level: its children and its path from the zone                 |
+| GET    | `/v1/network/{nodeCode}/meters?limit&offset`                                   | Meters under a node (from the export), paged                                 |
+| GET    | `/v1/network/issues`                                                           | Data-quality findings in the hierarchy (slower; lists all meters via search) |
 
-Full schemas are in [openapi.json](openapi.json), or `/docs` while the service is running. Error codes: 400 bad request, 404 unknown meter or route, 502 the portal failed or returned something unreadable, 503 this service couldn't log into the portal, 504 the portal timed out.
+The network tree is built from the portal export, so it only contains meters that are in the export. See `PROTOCOL.md` and `notes/decisions.md` for how inconsistent data is handled.
+
+Full schemas are in [openapi.json](openapi.json), or `/docs` while the service is running. Error codes: 400 bad request, 404 unknown meter, network node or route, 502 the portal failed or returned something unreadable, 503 this service couldn't log into the portal or the local index was never synced (`index_not_synced`), 504 the portal timed out.
 
 Note: `/health` makes one real call to the portal every time, since that's the only honest way to say whether the portal is up. Don't point a fast health-check at it.
-
 
 ## How it's put together
 
@@ -162,7 +170,13 @@ src/
   schemas.js           JSON Schemas: input validation, output shaping and OpenAPI, all from one place
   service.js           ties the portal calls and parsers together into the API's objects
   openapi.js           builds the OpenAPI document (used by the script and a test)
-  routes/              health.js, meters.js, transformers.js
+  hierarchy.js         pure: builds the network tree from the export and collects data issues
+  export-pull.js       pages the signed export defensively (shared by the request memo and sync)
+  sync.js              pulls the export into the SQLite index; records each run
+  index-store.js       SQLite schema, upsert and queries (prepared statements only)
+  index-service.js     index-backed answers: filters, near, sync status
+  geo.js               pure: haversine distance and bounding box
+  routes/              health.js, meters.js, transformers.js, network.js
   portal/
     client.js          login, cookies, retries, re-login, timeouts, concurrency cap, export signing
     parsers.js         pure functions: raw portal JSON in, clean objects out
@@ -178,7 +192,6 @@ notes/                 my working notes: protocol findings, decisions, mistakes
 The flow for a request is: the **route** checks the input and declares what it returns, the **service** works out which portal calls are needed, the **portal client** handles logging in and actually fetching, and the **parsers** turn the portal's messy JSON into clean objects (or throw if the shape is wrong). If anything fails anywhere, the **error handler** catches it and returns the one standard error shape.
 
 One small bit of caching: the service keeps a single copy of the portal's bulk export in memory for 60 seconds, so that back-to-back meter-detail requests don't each re-download ~230 KB. That's the only caching in here.
-
 
 The flow for a request is: the **route** checks the input and declares what it returns, the **service** works out which portal calls are needed, the **portal client** handles logging in and actually fetching, and the **parsers** turn the portal's messy JSON into clean objects (or throw if the shape is wrong). If anything fails anywhere, the **error handler** catches it and returns the one standard error shape.
 
@@ -200,10 +213,38 @@ Config is read once at startup from the environment (a `.env` file is loaded if 
 | `REQUEST_TIMEOUT_MS` | `20000`         | Timeout for each request to the portal                         |
 | `MAX_CONCURRENCY`    | `3`             | How many requests hit the portal at once (1 to 4)              |
 | `MAX_RETRIES`        | `3`             | Retries after a timeout, network error, 5xx or 429 (0 to 10)   |
+| `DB_PATH`            | `data/urja.db`  | SQLite index file written by `npm run sync` (git-ignored)      |
 | `HOST`               | `127.0.0.1`     | Address to listen on                                           |
 | `PORT`               | `3000`          | Port to listen on                                              |
 | `LOG_LEVEL`          | `info`          | `fatal`, `error`, `warn`, `info`, `debug`, `trace` or `silent` |
 | `NODE_ENV`           | `production`    | Set to `development` for readable logs (`pino-pretty`)         |
+
+## Sync & local index
+
+The portal can only search by id or serial. The bulk export has more (make, phase, status, hierarchy, coordinates), so `npm run sync` pulls all of it into a local SQLite file and some routes answer from there.
+
+```bash
+npm run sync        # needs the portal credentials in .env; writes data/urja.db
+npm start           # then use the index-backed routes below
+```
+
+What the sync does: logs in once, then reads `/portal/export` page by page through the same signed client (a fresh signature per page, 0.5 s pause between pages, bounded to 10 pages, stops on an empty or repeated page or when it has `total` rows). Malformed rows are skipped and logged, rows are upserted in batches of 100 (one transaction each, so re-running never duplicates), and each run is recorded in a `sync_runs` table. It prints a data-quality summary (rejected rows, duplicate ids, hierarchy inconsistencies). Exit code 0 = complete, 2 = incomplete (the paging guard stopped early), 1 = failed.
+
+What it enables:
+
+| Request                                                                                                        | Served from                                                  |
+| -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `GET /v1/meters` with none of the filters below                                                                | **Live portal** (`source: "portal"`, has `fetched_at`)       |
+| `GET /v1/meters?make=&phaseType=&installStatus=&installType=&build=&dtCode=&zone=&feeder=` (any mix, plus `q`) | **Index** (`source: "index"`, has `synced_at`)               |
+| `GET /v1/meters/near?lat=&lon=&radius_km=`                                                                     | **Index**                                                    |
+| `GET /v1/sync/status`                                                                                          | **Index**                                                    |
+| Everything else (`/v1/meters/{id}`, consumption, transformers, network)                                        | **Live portal** (the network tree uses the 60 s export memo) |
+
+Index answers can be stale: read `synced_at` (or `/v1/sync/status`). Before the first sync, index routes return 503 `index_not_synced`. Filters are exact, case-insensitive matches; zone, feeder and DT codes are normalised like the network tree. `near` uses a latitude/longitude box in SQL, then an exact haversine distance (spherical Earth, about 0.5% error) and sorts nearest first.
+
+**Limits and how it would scale.** This is a full-table, sync-on-demand design: every sync re-reads the whole export, nothing is deleted from the index (a meter removed from the portal stays until you delete `data/urja.db`), and `near` loads every row in the bounding box into memory and sorts it in JS. For the 403 meters here that costs nothing. Where it would start to struggle, roughly: the sync at tens of thousands of meters (the export is one big signed response and the portal is shared; I never saw how it behaves past 403 rows), `near` at a few hundred thousand rows with large radii (the lat/lon b-tree index only helps on one axis), and SQLite itself once several processes write or the data outgrows one machine. What I'd change: an incremental "changed since" sync (needs the portal to support it, otherwise hash-compare pages), deleting meters that disappear from a complete pull, a scheduled job instead of a manual command, and Postgres with PostGIS (or at least an R-tree index) for the geo queries.
+
+`node:sqlite` is built into Node but still marked experimental, so Node prints a one-line warning at startup and the API could change in a later Node release.
 
 ## Tests, lint, and the OpenAPI file
 
@@ -256,9 +297,10 @@ These are things the portal doesn't actually tell you, so I made a call and wrot
 ## What I intentionally skipped
 
 - Auth, CORS and rate limiting on this API (see above).
-- A general cache with freshness rules, and any database or local index — apart from the 60-second export memo, every request reads live from the portal.
-- The optional extensions: a `/v1/network` hierarchy endpoint, a "meters near this location" query, and a web client.
-- Rebuilding the upper hierarchy levels for meters missing from the export — they just get `null`.
+- A general cache with freshness rules. Apart from the 60-second export memo and the opt-in SQLite index, every request reads live from the portal.
+- Deleting meters from the index when they disappear from the portal, and incremental sync.
+- The web client.
+- Rebuilding the upper hierarchy levels for meters missing from the export — they are reported in `/v1/network/issues` and just get `null` on meter detail.
 - Parsing the portal's per-page `__data.json` (awkward format, and the same data is available as clean JSON anyway).
 - Docker, queues, an ORM, a frontend framework — overkill at this size.
 
@@ -266,7 +308,7 @@ These are things the portal doesn't actually tell you, so I made a call and wrot
 
 - A real cache with a clear freshness rule, and a background sync so no request has to wait on the 230 KB export.
 - Actually confirming the bits I guessed: the export's real page size and what happens past the last page, and how the portal responds to an unknown meter.
-- The optional extensions — a `/v1/network` tree, a local index (SQLite would probably be plenty for a fleet this size) for filtering and "near me" queries, and a small web client.
+- A scheduled, incremental sync with deletions, Postgres + PostGIS if the fleet grew by orders of magnitude, and a small web client.
 - Rebuilding hierarchy for meters outside the export using `dtCode` and the transformer list.
 - Running the shutdown path for real and doing a quick load test, plus an opt-in test that checks real portal responses against the fixtures to catch the portal changing.
 - Auth and per-client rate limits on this API.

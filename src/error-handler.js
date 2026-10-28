@@ -1,3 +1,5 @@
+import { NetworkNodeNotFound } from './hierarchy.js';
+import { IndexNotSynced } from './index-store.js';
 import {
   PortalAuthError,
   PortalError,
@@ -25,6 +27,16 @@ function describeValidation(error) {
 function classify(error, request) {
   if (error.validation) {
     return { status: 400, code: 'invalid_request', message: describeValidation(error) };
+  }
+  if (error instanceof NetworkNodeNotFound) {
+    return {
+      status: 404,
+      code: 'network_node_not_found',
+      message: `No network node with code '${request.params?.nodeCode ?? ''}'.`,
+    };
+  }
+  if (error instanceof IndexNotSynced) {
+    return { status: 503, code: 'index_not_synced', message: error.message };
   }
   // WHY: only meter lookups can yield PortalNotFound (unknown meter id).
   if (error instanceof PortalNotFound) {

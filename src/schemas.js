@@ -35,6 +35,31 @@ const summaryRequired = Object.keys(summaryProperties);
 
 const hierarchyLevels = ['zone', 'circle', 'division', 'subdivision', 'substation', 'feeder', 'dt'];
 
+const networkIssueTypes = [
+  'orphan_meter',
+  'conflicting_parent',
+  'duplicate_code_name',
+  'level_conflict',
+  'meter_not_in_export',
+  'dt_not_in_transformers',
+  'transformer_without_meters',
+  'feeder_mismatch',
+];
+
+const sourceProperties = {
+  source: {
+    type: 'string',
+    enum: ['portal', 'index'],
+    description:
+      'portal = read live from the portal just now (see fetched_at). index = read from the local SQLite index, which can be stale (see synced_at).',
+  },
+  synced_at: {
+    type: 'string',
+    format: 'date-time',
+    description: 'index only: when the index data was last synced from the portal export.',
+  },
+};
+
 const paginationProperties = {
   total: { type: 'integer', minimum: 0, description: 'Total matching records upstream.' },
   limit: { type: 'integer', description: 'Page size requested (echoed).' },
@@ -117,10 +142,90 @@ export const sharedSchemas = [
     $id: 'MeterList',
     type: 'object',
     additionalProperties: false,
-    required: ['data', 'total', 'limit', 'offset', 'fetched_at'],
+    required: ['data', 'total', 'limit', 'offset', 'source'],
     properties: {
       data: { type: 'array', items: { $ref: 'MeterSummary#' } },
       ...paginationProperties,
+      ...sourceProperties,
+      fetched_at: {
+        ...fetchedAt,
+        description: 'portal source only: when this service fetched the data (UTC, ISO 8601).',
+      },
+    },
+  },
+  {
+    $id: 'NearbyMeter',
+    type: 'object',
+    additionalProperties: false,
+    required: [...summaryRequired, 'geo', 'distance_km'],
+    properties: {
+      ...summaryProperties,
+      geo: { $ref: 'Geo#' },
+      distance_km: {
+        type: 'number',
+        minimum: 0,
+        description: 'Great-circle (haversine) distance from the query point, in km.',
+      },
+    },
+  },
+  {
+    $id: 'NearbyMeterList',
+    type: 'object',
+    additionalProperties: false,
+    required: ['data', 'total', 'limit', 'offset', 'source', 'synced_at'],
+    properties: {
+      data: { type: 'array', items: { $ref: 'NearbyMeter#' } },
+      total: { type: 'integer', minimum: 0, description: 'Meters within the radius.' },
+      limit: paginationProperties.limit,
+      offset: paginationProperties.offset,
+      ...sourceProperties,
+    },
+  },
+  {
+    $id: 'SyncRun',
+    type: 'object',
+    nullable: true,
+    description: 'The most recent sync attempt, or null if none has run.',
+    additionalProperties: false,
+    required: ['id', 'status', 'source', 'started_at', 'finished_at'],
+    properties: {
+      id: { type: 'integer' },
+      status: { type: 'string', enum: ['running', 'ok', 'incomplete', 'failed'] },
+      source: { type: 'string', description: 'The portal endpoint synced.' },
+      started_at: { type: 'string', format: 'date-time' },
+      finished_at: { type: 'string', format: 'date-time', nullable: true },
+      pages: { type: 'integer', nullable: true },
+      total_reported: {
+        type: 'integer',
+        nullable: true,
+        description: 'The export total the portal reported.',
+      },
+      rows_fetched: {
+        type: 'integer',
+        nullable: true,
+        description: 'Rows read, including rejected.',
+      },
+      rows_stored: { type: 'integer', nullable: true },
+      rows_skipped: { type: 'integer', nullable: true, description: 'Malformed rows rejected.' },
+      rows_duplicate: { type: 'integer', nullable: true },
+      error: { type: 'string', nullable: true, description: 'Short failure code.' },
+    },
+  },
+  {
+    $id: 'SyncStatus',
+    type: 'object',
+    additionalProperties: false,
+    required: ['source', 'meters_indexed', 'synced_at', 'last_run'],
+    properties: {
+      source: { type: 'string', enum: ['index'] },
+      meters_indexed: { type: 'integer', minimum: 0 },
+      synced_at: {
+        type: 'string',
+        format: 'date-time',
+        nullable: true,
+        description: 'When the last run that stored data finished; null if never synced.',
+      },
+      last_run: { $ref: 'SyncRun#' },
     },
   },
   {
@@ -228,6 +333,91 @@ export const sharedSchemas = [
     },
   },
   {
+    $id: 'NetworkNode',
+    type: 'object',
+    additionalProperties: false,
+    required: ['code', 'name', 'level', 'parentCode', 'aliases', 'childCount', 'meterCount'],
+    properties: {
+      code: {
+        type: 'string',
+        description: 'Normalised code (trimmed, upper-case).',
+        examples: ['Z-01'],
+      },
+      name: {
+        type: 'string',
+        description: 'Name as first seen in the export, whitespace-trimmed.',
+      },
+      level: { type: 'string', enum: hierarchyLevels },
+      parentCode: { type: 'string', nullable: true, description: 'null for a zone.' },
+      aliases: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Other raw spellings of the code seen in the export (case or whitespace).',
+      },
+      childCount: { type: 'integer', minimum: 0 },
+      meterCount: {
+        type: 'integer',
+        minimum: 0,
+        description: 'Export meters placed at or below this node.',
+      },
+    },
+  },
+  {
+    $id: 'NetworkNodeList',
+    type: 'object',
+    additionalProperties: false,
+    required: ['data', 'total', 'fetched_at'],
+    properties: {
+      data: { type: 'array', items: { $ref: 'NetworkNode#' } },
+      total: { type: 'integer', minimum: 0 },
+      fetched_at: fetchedAt,
+    },
+  },
+  {
+    $id: 'NetworkNodeDetail',
+    type: 'object',
+    additionalProperties: false,
+    required: ['node', 'children', 'path', 'fetched_at'],
+    properties: {
+      node: { $ref: 'NetworkNode#' },
+      children: { type: 'array', items: { $ref: 'NetworkNode#' } },
+      path: {
+        type: 'array',
+        items: { $ref: 'NetworkNode#' },
+        description: 'From the zone down to this node, inclusive.',
+      },
+      fetched_at: fetchedAt,
+    },
+  },
+  {
+    $id: 'NetworkIssue',
+    type: 'object',
+    additionalProperties: false,
+    required: ['type', 'code', 'meterId', 'detail'],
+    properties: {
+      type: {
+        type: 'string',
+        enum: networkIssueTypes,
+        description:
+          'orphan_meter: dtCode disagrees with the hierarchy, or the meter fits no node. conflicting_parent: a code sits under two parents. duplicate_code_name: a code has two names. level_conflict: a code is used at two levels. meter_not_in_export: in portal search, absent from the export. dt_not_in_transformers / transformer_without_meters / feeder_mismatch: export and /portal/dts disagree.',
+      },
+      code: { type: 'string', nullable: true, description: 'Node code concerned, if any.' },
+      meterId: { type: 'string', nullable: true, description: 'Meter concerned, if any.' },
+      detail: { type: 'string' },
+    },
+  },
+  {
+    $id: 'NetworkIssueList',
+    type: 'object',
+    additionalProperties: false,
+    required: ['data', 'total', 'fetched_at'],
+    properties: {
+      data: { type: 'array', items: { $ref: 'NetworkIssue#' } },
+      total: { type: 'integer', minimum: 0 },
+      fetched_at: fetchedAt,
+    },
+  },
+  {
     $id: 'Health',
     type: 'object',
     additionalProperties: false,
@@ -268,11 +458,15 @@ const errorResponse = (description) => ({
 /** Response entries shared by routes: error statuses, all in the single error shape. */
 export const errorResponses = {
   400: errorResponse('Invalid request (code invalid_request).'),
-  404: errorResponse('Unknown meter or route (meter_not_found, route_not_found).'),
+  404: errorResponse(
+    'Unknown meter, network node or route (meter_not_found, network_node_not_found, route_not_found).',
+  ),
   502: errorResponse(
     'The portal failed or returned something unreadable (portal_unavailable, portal_bad_response).',
   ),
-  503: errorResponse('This service could not log in to the portal (portal_auth_failed).'),
+  503: errorResponse(
+    'This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).',
+  ),
   504: errorResponse('The portal timed out (portal_timeout).'),
 };
 

@@ -1,4 +1,46 @@
+import { hasIndexFilters } from '../index-service.js';
 import { errorResponses, limitQuery, offsetQuery } from '../schemas.js';
+
+const codePattern = '^[A-Za-z0-9_.-]{1,32}$';
+
+/** Index-backed filters: exact, case-insensitive matches (codes are normalised). */
+const indexFilterProperties = {
+  make: { type: 'string', minLength: 1, maxLength: 64, description: 'Index-backed. Meter make.' },
+  phaseType: {
+    type: 'string',
+    minLength: 1,
+    maxLength: 32,
+    description: 'Index-backed. Phase type, e.g. single, three.',
+  },
+  installStatus: {
+    type: 'string',
+    minLength: 1,
+    maxLength: 32,
+    description: 'Index-backed. Install status, e.g. Installed, Decommissioned.',
+  },
+  installType: {
+    type: 'string',
+    minLength: 1,
+    maxLength: 64,
+    description: 'Index-backed. Install type, e.g. "Whole Current".',
+  },
+  build: { type: 'string', minLength: 1, maxLength: 32, description: 'Index-backed. Meter build.' },
+  dtCode: {
+    type: 'string',
+    pattern: codePattern,
+    description: 'Index-backed. Distribution transformer code, e.g. DT-001.',
+  },
+  zone: {
+    type: 'string',
+    pattern: codePattern,
+    description: 'Index-backed. Zone code, e.g. Z-01.',
+  },
+  feeder: {
+    type: 'string',
+    pattern: codePattern,
+    description: 'Index-backed. Feeder code, e.g. F-001.',
+  },
+};
 
 const meterIdParam = {
   type: 'object',
@@ -30,7 +72,7 @@ export default async function meterRoutes(app) {
       schema: {
         summary: 'List meters',
         description:
-          "Meters from the portal search, which is the source of truth for the meter list. `q` is a partial match on meter ID or serial number. limit/offset are mapped onto the portal's 20-row pages.",
+          "Without filters: live from the portal search, the source of truth for the meter list (`source: portal`); limit/offset are mapped onto the portal's 20-row pages. With any of make, phaseType, installStatus, installType, build, dtCode, zone or feeder: answered from the local SQLite index (`source: index`, see `synced_at`), combinable with `q`, and requires `npm run sync` to have run. `q` is a partial match on meter ID or serial number in both modes.",
         tags: ['meters'],
         querystring: {
           type: 'object',
@@ -40,6 +82,7 @@ export default async function meterRoutes(app) {
               maxLength: 64,
               description: 'Partial match on meterId or serialNo.',
             },
+            ...indexFilterProperties,
             limit: limitQuery,
             offset: offsetQuery,
           },
@@ -53,7 +96,48 @@ export default async function meterRoutes(app) {
         },
       },
     },
-    async (request) => app.service.listMeters(request.query),
+    async (request) =>
+      hasIndexFilters(request.query)
+        ? app.indexService.searchMeters(request.query)
+        : app.service.listMeters(request.query),
+  );
+
+  app.get(
+    '/meters/near',
+    {
+      schema: {
+        summary: 'Meters near a location',
+        description:
+          'From the local SQLite index (`npm run sync`). A latitude/longitude box prefilters in SQL, then the exact haversine distance is computed and results are sorted nearest first. Distances assume a spherical Earth (about 0.5% error).',
+        tags: ['meters'],
+        querystring: {
+          type: 'object',
+          required: ['lat', 'lon'],
+          properties: {
+            lat: { type: 'number', minimum: -90, maximum: 90, description: 'Degrees north.' },
+            lon: { type: 'number', minimum: -180, maximum: 180, description: 'Degrees east.' },
+            radius_km: {
+              type: 'number',
+              exclusiveMinimum: 0,
+              maximum: 500,
+              default: 5,
+              description: 'Search radius in kilometres.',
+            },
+            limit: limitQuery,
+            offset: offsetQuery,
+          },
+        },
+        response: {
+          200: {
+            description: 'Meters within the radius, nearest first.',
+            $ref: 'NearbyMeterList#',
+          },
+          400: errorResponses[400],
+          503: errorResponses[503],
+        },
+      },
+    },
+    async (request) => app.indexService.nearby(request.query),
   );
 
   app.get(

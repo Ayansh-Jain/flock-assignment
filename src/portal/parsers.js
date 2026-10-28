@@ -3,7 +3,7 @@
 // instead of producing half-garbage. Errors name the response and field, never the raw body.
 import { PortalParseError } from './errors.js';
 
-const HIERARCHY_LEVELS = [
+export const HIERARCHY_LEVELS = [
   'zone',
   'circle',
   'division',

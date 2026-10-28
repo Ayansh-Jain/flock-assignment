@@ -44,7 +44,7 @@ function createFakeService(overrides = {}) {
     async listMeters(query) {
       calls.push(['listMeters', { ...query }]);
       const data = query.offset >= 403 ? [] : fixtures.meters.slice(0, query.limit);
-      return { data, total: 403, ...query, fetched_at: FETCHED_AT };
+      return { data, total: 403, ...query, source: 'portal', fetched_at: FETCHED_AT };
     },
     async getMeter(meterId) {
       calls.push(['getMeter', meterId]);

@@ -94,6 +94,20 @@ All are `GET`, cookie-authenticated, read-only.
 
 **Network hierarchy** **[Observed]** is seven levels in the export, each `{name, code}`: `zone` > `circle` > `division` > `subdivision` > `substation` > `feeder` > `dt`. Search rows only carry a `dtCode`, so a meter outside the export has no hierarchy here (`null`). The upper levels are not reconstructed from `dtCode`.
 
+**Messy hierarchy data.** Every export row carries its own full chain, so the tree is the union of those chains, keyed by code (`/v1/network`). **[Observed]** The saved export fixture holds only 3 rows, and in them every code sits at one level under one parent with one name, `dtCode` equals the DT in the hierarchy, and nothing needs normalising. So none of the cases below has been seen in real data: they are defences, tested on hand-built input. **[Assumed]** The full 403-row export may differ. Each case is reported at `/v1/network/issues` and nothing is dropped:
+
+| Case                                                                                                          | Handling                                                                                                                               |
+| ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Code differs only by case or whitespace                                                                       | Normalised (trim, upper-case) so it groups; the raw spelling is kept in the node's `aliases`.                                          |
+| Same code under two parents (`conflicting_parent`)                                                            | First-seen parent wins; the disagreement is reported; the meter still lands on its DT.                                                 |
+| Same code, different names (`duplicate_code_name`)                                                            | First-seen name kept; reported.                                                                                                        |
+| Same code at two levels, which would make a cycle (`level_conflict`)                                          | The later use is ignored and reported; the meter goes to `unplaced` (`orphan_meter`). Tree walks are depth-bounded with a visited set. |
+| `dtCode` differs from the DT in the hierarchy (`orphan_meter`)                                                | Placed by the hierarchy; reported.                                                                                                     |
+| Export and `/portal/dts` disagree (`dt_not_in_transformers`, `transformer_without_meters`, `feeder_mismatch`) | Reported only.                                                                                                                         |
+| In portal search but absent from the export (`meter_not_in_export`)                                           | Not in the tree (nothing to place it by); reported. Costs a full search listing, so only `/v1/network/issues` does it.                 |
+
+**Limitation:** the tree only covers meters present in the export. Treat meter counts as "export meters", and treat `meter_not_in_export` as the size of the gap.
+
 **Daily consumption** is derived, not provided. For each IST calendar day, the total is the last reading of that day minus the last reading of the previous day. A day is reported only if it ends at 23:30 and the previous day also does.
 
 - The sample meter has **337 readings**, from `23/06/2026 23:30` to `30/06/2026 23:30`. That is 7 days of 48 readings plus one extra reading, not 8 full days.

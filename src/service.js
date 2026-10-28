@@ -1,3 +1,12 @@
+import { pullExport } from './export-pull.js';
+import {
+  buildNetwork,
+  collectMeters,
+  findMetersMissingFromExport,
+  getNode,
+  pathToRoot,
+  toNodeView,
+} from './hierarchy.js';
 import {
   PortalError,
   PortalNotFound,
@@ -7,7 +16,6 @@ import {
 import {
   deriveDailyConsumption,
   parseEnergy,
-  parseExport,
   parseGeo,
   parseMeterList,
   parseTransformers,
@@ -16,9 +24,9 @@ import {
 // Observed: both /portal/meters/search and /portal/dts return 20 rows per page.
 const UPSTREAM_PAGE_SIZE = 20;
 const MAX_LOOKUP_PAGES = 5;
-const MAX_EXPORT_PAGES = 10;
+const MAX_SEARCH_PAGES = 25;
+const MAX_PAGE_LIMIT = 200;
 const EXPORT_MEMO_TTL_MS = 60_000;
-const EXPORT_SKIP_SAMPLE_SIZE = 5;
 
 /**
  * Serve a limit/offset window from a fixed-size paged upstream.
@@ -68,8 +76,6 @@ export function createMeterService({
   exportTtlMs = EXPORT_MEMO_TTL_MS,
 }) {
   const fetchedAt = () => now().toISOString();
-  /** @type {{ loadedAt: number, promise: Promise<Map<string, object>> } | null} */
-  let exportMemo = null;
 
   /** Find the search row whose meterId matches exactly (search is a partial match). */
   async function findMeterSummary(meterId) {
@@ -82,58 +88,74 @@ export function createMeterService({
     throw new PortalNotFound(`No meter with id ${meterId}`);
   }
 
-  /**
-   * Pull the portal export (bounded, defensive about paging) into a map by meterId. Bad rows
-   * are skipped and reported in the log, never aborting the pull.
-   */
+  /** The portal export as a map by meterId (paging and bad-row handling: src/export-pull.js). */
   async function pullExportIndex() {
-    const byId = new Map();
-    const skipped = { count: 0, samples: [] };
-    let rowsSeen = 0;
-    let complete = false;
-    for (let page = 1; page <= MAX_EXPORT_PAGES; page += 1) {
-      const parsed = parseExport(await portalClient.fetchExport({ page }));
-      const before = byId.size;
-      for (const meter of parsed.meters) byId.set(meter.meterId, meter);
-      skipped.count += parsed.skipped.count;
-      skipped.samples.push(...parsed.skipped.samples);
-      rowsSeen += parsed.meters.length + parsed.skipped.count;
-      if (rowsSeen === 0 || rowsSeen >= parsed.total) {
-        complete = true;
-        break;
-      }
-      // A repeated page adds nothing new: stop instead of looping to the page cap.
-      if (parsed.meters.length > 0 && byId.size === before) break;
-    }
-    if (!complete) logger.warn({ meters: byId.size }, 'portal export may be incomplete');
-    if (skipped.count > 0) {
-      logger.warn(
-        { skippedCount: skipped.count, samples: skipped.samples.slice(0, EXPORT_SKIP_SAMPLE_SIZE) },
-        'skipped malformed rows in portal export',
-      );
-    }
-    return byId;
+    const { meters } = await pullExport({ portalClient, logger });
+    return new Map(meters.map((meter) => [meter.meterId, meter]));
   }
 
   /**
-   * The export index, memoised in-process for `exportTtlMs` so meter detail does not re-pull
-   * ~230 KB per request. One entry only (so memory is bounded by the dataset), concurrent
-   * callers share one pull, and a failed pull is never kept. Staleness is therefore at most
-   * the TTL; there is no invalidation and no cross-process sharing.
+   * Wrap a loader in a one-entry in-process memo of `exportTtlMs`. One entry only (so memory is
+   * bounded by the dataset), concurrent callers share one load, and a failed load is never kept.
+   * Staleness is therefore at most the TTL; there is no invalidation and no cross-process sharing.
    */
-  async function loadExportIndex() {
-    const nowMs = now().getTime();
-    if (!exportMemo || nowMs - exportMemo.loadedAt >= exportTtlMs) {
-      exportMemo = { loadedAt: nowMs, promise: pullExportIndex() };
-    }
-    const entry = exportMemo;
-    try {
-      return await entry.promise;
-    } catch (error) {
-      if (exportMemo === entry) exportMemo = null;
-      throw error;
-    }
+  function memoised(load) {
+    /** @type {{ loadedAt: number, promise: Promise<any> } | null} */
+    let memo = null;
+    return async () => {
+      const nowMs = now().getTime();
+      if (!memo || nowMs - memo.loadedAt >= exportTtlMs) {
+        memo = { loadedAt: nowMs, promise: load() };
+      }
+      const entry = memo;
+      try {
+        return await entry.promise;
+      } catch (error) {
+        if (memo === entry) memo = null;
+        throw error;
+      }
+    };
   }
+
+  // The export is ~230 KB, so meter detail and the network endpoints share one pull.
+  const loadExportIndex = memoised(pullExportIndex);
+
+  /** Every transformer, via the same window reader as the public list. */
+  async function pullAllTransformers() {
+    const { rows, total } = await readWindow({
+      limit: MAX_PAGE_LIMIT,
+      offset: 0,
+      fetchPage: fetchTransformerPage,
+    });
+    if (rows.length < total) {
+      logger.warn({ rows: rows.length, total }, 'transformer list truncated for network checks');
+    }
+    return rows;
+  }
+
+  async function fetchTransformerPage(page) {
+    const result = parseTransformers(await portalClient.fetchTransformers({ page }));
+    return { rows: result.transformers, total: result.total, pageSize: result.pageSize };
+  }
+
+  /** Every meter id the portal search lists, sequentially (polite) and bounded. */
+  async function pullSearchIds() {
+    const ids = [];
+    for (let page = 1; page <= MAX_SEARCH_PAGES; page += 1) {
+      const result = parseMeterList(await portalClient.fetchMeterList({ q: '', page }));
+      ids.push(...result.meters.map((meter) => meter.meterId));
+      if (result.meters.length === 0 || page * result.pageSize >= result.total) return ids;
+    }
+    logger.warn({ ids: ids.length }, 'portal search listing may be incomplete');
+    return ids;
+  }
+
+  const loadNetwork = memoised(async () => {
+    const [index, transformers] = await Promise.all([loadExportIndex(), pullAllTransformers()]);
+    const exportMeters = [...index.values()];
+    return { exportMeters, ...buildNetwork({ exportMeters, transformers }) };
+  });
+  const loadSearchIds = memoised(pullSearchIds);
 
   /** Export enrichment is optional: if the export itself fails, degrade to "not in export". */
   async function findExportRow(meterId) {
@@ -163,7 +185,7 @@ export function createMeterService({
           return { rows: result.meters, total: result.total, pageSize: result.pageSize };
         },
       });
-      return { data: rows, total, limit, offset, fetched_at: fetchedAt() };
+      return { data: rows, total, limit, offset, source: 'portal', fetched_at: fetchedAt() };
     },
 
     /** @param {string} meterId */
@@ -208,15 +230,54 @@ export function createMeterService({
 
     /** @param {{ limit: number, offset: number }} query */
     async listTransformers({ limit, offset }) {
-      const { rows, total } = await readWindow({
+      const { rows, total } = await readWindow({ limit, offset, fetchPage: fetchTransformerPage });
+      return { data: rows, total, limit, offset, fetched_at: fetchedAt() };
+    },
+
+    /** Top-level nodes (zones) of the network built from the export. */
+    async listNetworkRoots() {
+      const { tree } = await loadNetwork();
+      const data = tree.roots.map((code) => toNodeView(tree.nodes.get(code)));
+      return { data, total: data.length, fetched_at: fetchedAt() };
+    },
+
+    /** @param {string} nodeCode */
+    async getNetworkNode(nodeCode) {
+      const { tree } = await loadNetwork();
+      const node = getNode(tree, nodeCode);
+      return {
+        node: toNodeView(node),
+        children: node.childCodes.map((code) => toNodeView(tree.nodes.get(code))),
+        path: pathToRoot(tree, node).map(toNodeView),
+        fetched_at: fetchedAt(),
+      };
+    },
+
+    /** @param {string} nodeCode @param {{ limit: number, offset: number }} window */
+    async listNetworkMeters(nodeCode, { limit, offset }) {
+      const { tree } = await loadNetwork();
+      const meters = collectMeters(tree, getNode(tree, nodeCode));
+      return {
+        data: meters.slice(offset, offset + limit),
+        total: meters.length,
         limit,
         offset,
-        fetchPage: async (page) => {
-          const result = parseTransformers(await portalClient.fetchTransformers({ page }));
-          return { rows: result.transformers, total: result.total, pageSize: result.pageSize };
-        },
-      });
-      return { data: rows, total, limit, offset, fetched_at: fetchedAt() };
+        source: 'portal',
+        fetched_at: fetchedAt(),
+      };
+    },
+
+    /**
+     * Data-quality findings. Costs one extra bounded search listing (about 21 portal calls,
+     * memoised) to find meters the export lacks; the tree endpoints do not pay for it.
+     */
+    async listNetworkIssues() {
+      const [{ exportMeters, issues }, searchMeterIds] = await Promise.all([
+        loadNetwork(),
+        loadSearchIds(),
+      ]);
+      const data = [...issues, ...findMetersMissingFromExport({ exportMeters, searchMeterIds })];
+      return { data, total: data.length, fetched_at: fetchedAt() };
     },
 
     /** Cheap read-only probe used by /health. Never throws for portal problems. */

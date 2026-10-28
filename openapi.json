@@ -3,7 +3,7 @@
   "info": {
     "title": "Urja Meter API",
     "version": "0.1.0",
-    "description": "A clean, read-only JSON API in front of the legacy \"Urja Meter Ops\" portal. Data is fetched from the portal on request (no caching yet); every response carries `fetched_at`. Assumptions: portal timestamps are IST (+05:30); energy registers are kWh / kVAh. This API has no authentication of its own; run it on a trusted network."
+    "description": "A clean, read-only JSON API in front of the legacy \"Urja Meter Ops\" portal. Most data is fetched from the portal on request (`source: portal`, with `fetched_at`). Filtered meter lists, near-location queries and sync status come from a local SQLite index filled by `npm run sync` (`source: index`, with `synced_at`) and can be stale. Assumptions: portal timestamps are IST (+05:30); energy registers are kWh / kVAh. This API has no authentication of its own; run it on a trusted network."
   },
   "components": {
     "schemas": {
@@ -195,7 +195,7 @@
           "total",
           "limit",
           "offset",
-          "fetched_at"
+          "source"
         ],
         "properties": {
           "data": {
@@ -220,7 +220,218 @@
           "fetched_at": {
             "type": "string",
             "format": "date-time",
-            "description": "When this service fetched the data from the portal (UTC, ISO 8601)."
+            "description": "portal source only: when this service fetched the data (UTC, ISO 8601)."
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "portal",
+              "index"
+            ],
+            "description": "portal = read live from the portal just now (see fetched_at). index = read from the local SQLite index, which can be stale (see synced_at)."
+          },
+          "synced_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "index only: when the index data was last synced from the portal export."
+          }
+        }
+      },
+      "NearbyMeter": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "meterId",
+          "serialNo",
+          "make",
+          "phaseType",
+          "installStatus",
+          "dtCode",
+          "geo",
+          "distance_km"
+        ],
+        "properties": {
+          "meterId": {
+            "type": "string",
+            "description": "Portal meter ID.",
+            "example": "J100001"
+          },
+          "serialNo": {
+            "type": "string",
+            "description": "Manufacturer serial number. Opaque; may contain \"&\". Its prefix is unrelated to make."
+          },
+          "make": {
+            "type": "string",
+            "description": "Meter manufacturer as the portal spells it."
+          },
+          "phaseType": {
+            "type": "string",
+            "description": "Phase type as the portal reports it, e.g. single, three."
+          },
+          "installStatus": {
+            "type": "string",
+            "description": "Install status as the portal reports it, e.g. Installed, Decommissioned, Faulty."
+          },
+          "dtCode": {
+            "type": "string",
+            "description": "Code of the distribution transformer (DT) the meter hangs off."
+          },
+          "geo": {
+            "$ref": "#/components/schemas/Geo"
+          },
+          "distance_km": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Great-circle (haversine) distance from the query point, in km."
+          }
+        }
+      },
+      "NearbyMeterList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "total",
+          "limit",
+          "offset",
+          "source",
+          "synced_at"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NearbyMeter"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Meters within the radius."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size requested (echoed)."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Zero-based offset requested (echoed)."
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "portal",
+              "index"
+            ],
+            "description": "portal = read live from the portal just now (see fetched_at). index = read from the local SQLite index, which can be stale (see synced_at)."
+          },
+          "synced_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "index only: when the index data was last synced from the portal export."
+          }
+        }
+      },
+      "SyncRun": {
+        "type": "object",
+        "nullable": true,
+        "description": "The most recent sync attempt, or null if none has run.",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "status",
+          "source",
+          "started_at",
+          "finished_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "ok",
+              "incomplete",
+              "failed"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "description": "The portal endpoint synced."
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finished_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "pages": {
+            "type": "integer",
+            "nullable": true
+          },
+          "total_reported": {
+            "type": "integer",
+            "nullable": true,
+            "description": "The export total the portal reported."
+          },
+          "rows_fetched": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Rows read, including rejected."
+          },
+          "rows_stored": {
+            "type": "integer",
+            "nullable": true
+          },
+          "rows_skipped": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Malformed rows rejected."
+          },
+          "rows_duplicate": {
+            "type": "integer",
+            "nullable": true
+          },
+          "error": {
+            "type": "string",
+            "nullable": true,
+            "description": "Short failure code."
+          }
+        }
+      },
+      "SyncStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source",
+          "meters_indexed",
+          "synced_at",
+          "last_run"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "index"
+            ]
+          },
+          "meters_indexed": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "synced_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When the last run that stored data finished; null if never synced."
+          },
+          "last_run": {
+            "$ref": "#/components/schemas/SyncRun"
           }
         }
       },
@@ -426,6 +637,187 @@
           }
         }
       },
+      "NetworkNode": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "name",
+          "level",
+          "parentCode",
+          "aliases",
+          "childCount",
+          "meterCount"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Normalised code (trimmed, upper-case).",
+            "example": "Z-01"
+          },
+          "name": {
+            "type": "string",
+            "description": "Name as first seen in the export, whitespace-trimmed."
+          },
+          "level": {
+            "type": "string",
+            "enum": [
+              "zone",
+              "circle",
+              "division",
+              "subdivision",
+              "substation",
+              "feeder",
+              "dt"
+            ]
+          },
+          "parentCode": {
+            "type": "string",
+            "nullable": true,
+            "description": "null for a zone."
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Other raw spellings of the code seen in the export (case or whitespace)."
+          },
+          "childCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "meterCount": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Export meters placed at or below this node."
+          }
+        }
+      },
+      "NetworkNodeList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "total",
+          "fetched_at"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NetworkNode"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When this service fetched the data from the portal (UTC, ISO 8601)."
+          }
+        }
+      },
+      "NetworkNodeDetail": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "node",
+          "children",
+          "path",
+          "fetched_at"
+        ],
+        "properties": {
+          "node": {
+            "$ref": "#/components/schemas/NetworkNode"
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NetworkNode"
+            }
+          },
+          "path": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NetworkNode"
+            },
+            "description": "From the zone down to this node, inclusive."
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When this service fetched the data from the portal (UTC, ISO 8601)."
+          }
+        }
+      },
+      "NetworkIssue": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "code",
+          "meterId",
+          "detail"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "orphan_meter",
+              "conflicting_parent",
+              "duplicate_code_name",
+              "level_conflict",
+              "meter_not_in_export",
+              "dt_not_in_transformers",
+              "transformer_without_meters",
+              "feeder_mismatch"
+            ],
+            "description": "orphan_meter: dtCode disagrees with the hierarchy, or the meter fits no node. conflicting_parent: a code sits under two parents. duplicate_code_name: a code has two names. level_conflict: a code is used at two levels. meter_not_in_export: in portal search, absent from the export. dt_not_in_transformers / transformer_without_meters / feeder_mismatch: export and /portal/dts disagree."
+          },
+          "code": {
+            "type": "string",
+            "nullable": true,
+            "description": "Node code concerned, if any."
+          },
+          "meterId": {
+            "type": "string",
+            "nullable": true,
+            "description": "Meter concerned, if any."
+          },
+          "detail": {
+            "type": "string"
+          }
+        }
+      },
+      "NetworkIssueList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "total",
+          "fetched_at"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NetworkIssue"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When this service fetched the data from the portal (UTC, ISO 8601)."
+          }
+        }
+      },
       "Health": {
         "type": "object",
         "additionalProperties": false,
@@ -510,7 +902,7 @@
         "tags": [
           "meters"
         ],
-        "description": "Meters from the portal search, which is the source of truth for the meter list. `q` is a partial match on meter ID or serial number. limit/offset are mapped onto the portal's 20-row pages.",
+        "description": "Without filters: live from the portal search, the source of truth for the meter list (`source: portal`); limit/offset are mapped onto the portal's 20-row pages. With any of make, phaseType, installStatus, installType, build, dtCode, zone or feeder: answered from the local SQLite index (`source: index`, see `synced_at`), combinable with `q`, and requires `npm run sync` to have run. `q` is a partial match on meter ID or serial number in both modes.",
         "parameters": [
           {
             "schema": {
@@ -521,6 +913,91 @@
             "name": "q",
             "required": false,
             "description": "Partial match on meterId or serialNo."
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "in": "query",
+            "name": "make",
+            "required": false,
+            "description": "Index-backed. Meter make."
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32
+            },
+            "in": "query",
+            "name": "phaseType",
+            "required": false,
+            "description": "Index-backed. Phase type, e.g. single, three."
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32
+            },
+            "in": "query",
+            "name": "installStatus",
+            "required": false,
+            "description": "Index-backed. Install status, e.g. Installed, Decommissioned."
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "in": "query",
+            "name": "installType",
+            "required": false,
+            "description": "Index-backed. Install type, e.g. \"Whole Current\"."
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32
+            },
+            "in": "query",
+            "name": "build",
+            "required": false,
+            "description": "Index-backed. Meter build."
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]{1,32}$"
+            },
+            "in": "query",
+            "name": "dtCode",
+            "required": false,
+            "description": "Index-backed. Distribution transformer code, e.g. DT-001."
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]{1,32}$"
+            },
+            "in": "query",
+            "name": "zone",
+            "required": false,
+            "description": "Index-backed. Zone code, e.g. Z-01."
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]{1,32}$"
+            },
+            "in": "query",
+            "name": "feeder",
+            "required": false,
+            "description": "Index-backed. Feeder code, e.g. F-001."
           },
           {
             "schema": {
@@ -596,11 +1073,11 @@
             }
           },
           "503": {
-            "description": "This service could not log in to the portal (portal_auth_failed).",
+            "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "This service could not log in to the portal (portal_auth_failed).",
+                  "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
                   "type": "object",
                   "required": [
                     "error"
@@ -620,6 +1097,124 @@
               "application/json": {
                 "schema": {
                   "description": "The portal timed out (portal_timeout).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/meters/near": {
+      "get": {
+        "summary": "Meters near a location",
+        "tags": [
+          "meters"
+        ],
+        "description": "From the local SQLite index (`npm run sync`). A latitude/longitude box prefilters in SQL, then the exact haversine distance is computed and results are sorted nearest first. Distances assume a spherical Earth (about 0.5% error).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "number",
+              "minimum": -90,
+              "maximum": 90
+            },
+            "in": "query",
+            "name": "lat",
+            "required": true,
+            "description": "Degrees north."
+          },
+          {
+            "schema": {
+              "type": "number",
+              "minimum": -180,
+              "maximum": 180
+            },
+            "in": "query",
+            "name": "lon",
+            "required": true,
+            "description": "Degrees east."
+          },
+          {
+            "schema": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 500,
+              "default": 5
+            },
+            "in": "query",
+            "name": "radius_km",
+            "required": false,
+            "description": "Search radius in kilometres."
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "description": "Maximum records to return."
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "description": "Zero-based index of the first record to return."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Meters within the radius, nearest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NearbyMeterList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (code invalid_request).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Invalid request (code invalid_request).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
                   "type": "object",
                   "required": [
                     "error"
@@ -686,11 +1281,11 @@
             }
           },
           "404": {
-            "description": "Unknown meter or route (meter_not_found, route_not_found).",
+            "description": "Unknown meter, network node or route (meter_not_found, network_node_not_found, route_not_found).",
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "Unknown meter or route (meter_not_found, route_not_found).",
+                  "description": "Unknown meter, network node or route (meter_not_found, network_node_not_found, route_not_found).",
                   "type": "object",
                   "required": [
                     "error"
@@ -724,11 +1319,11 @@
             }
           },
           "503": {
-            "description": "This service could not log in to the portal (portal_auth_failed).",
+            "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "This service could not log in to the portal (portal_auth_failed).",
+                  "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
                   "type": "object",
                   "required": [
                     "error"
@@ -814,11 +1409,11 @@
             }
           },
           "404": {
-            "description": "Unknown meter or route (meter_not_found, route_not_found).",
+            "description": "Unknown meter, network node or route (meter_not_found, network_node_not_found, route_not_found).",
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "Unknown meter or route (meter_not_found, route_not_found).",
+                  "description": "Unknown meter, network node or route (meter_not_found, network_node_not_found, route_not_found).",
                   "type": "object",
                   "required": [
                     "error"
@@ -852,11 +1447,11 @@
             }
           },
           "503": {
-            "description": "This service could not log in to the portal (portal_auth_failed).",
+            "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "This service could not log in to the portal (portal_auth_failed).",
+                  "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
                   "type": "object",
                   "required": [
                     "error"
@@ -942,11 +1537,11 @@
             }
           },
           "404": {
-            "description": "Unknown meter or route (meter_not_found, route_not_found).",
+            "description": "Unknown meter, network node or route (meter_not_found, network_node_not_found, route_not_found).",
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "Unknown meter or route (meter_not_found, route_not_found).",
+                  "description": "Unknown meter, network node or route (meter_not_found, network_node_not_found, route_not_found).",
                   "type": "object",
                   "required": [
                     "error"
@@ -980,11 +1575,11 @@
             }
           },
           "503": {
-            "description": "This service could not log in to the portal (portal_auth_failed).",
+            "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "This service could not log in to the portal (portal_auth_failed).",
+                  "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
                   "type": "object",
                   "required": [
                     "error"
@@ -1102,11 +1697,11 @@
             }
           },
           "503": {
-            "description": "This service could not log in to the portal (portal_auth_failed).",
+            "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "This service could not log in to the portal (portal_auth_failed).",
+                  "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
                   "type": "object",
                   "required": [
                     "error"
@@ -1141,6 +1736,481 @@
           }
         }
       }
+    },
+    "/v1/network": {
+      "get": {
+        "summary": "Network zones",
+        "tags": [
+          "network"
+        ],
+        "description": "Top-level nodes (zones) of the network hierarchy, with child and meter counts. Built from the portal export, so only meters present in the export are counted.",
+        "responses": {
+          "200": {
+            "description": "The zones.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkNodeList"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The portal failed or returned something unreadable (portal_unavailable, portal_bad_response).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "The portal failed or returned something unreadable (portal_unavailable, portal_bad_response).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The portal timed out (portal_timeout).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "The portal timed out (portal_timeout).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/network/issues": {
+      "get": {
+        "summary": "Network data-quality issues",
+        "tags": [
+          "network"
+        ],
+        "description": "Inconsistencies found while building the tree: conflicting parents, duplicate codes with different names, orphan meters, disagreements with the transformer list, and meters in portal search that the export lacks. Nothing is dropped; each finding is reported. Slower than the other network routes: it also lists every meter from portal search (memoised for a minute).",
+        "responses": {
+          "200": {
+            "description": "The findings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkIssueList"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The portal failed or returned something unreadable (portal_unavailable, portal_bad_response).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "The portal failed or returned something unreadable (portal_unavailable, portal_bad_response).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The portal timed out (portal_timeout).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "The portal timed out (portal_timeout).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/network/{nodeCode}": {
+      "get": {
+        "summary": "Network node",
+        "tags": [
+          "network"
+        ],
+        "description": "A node at any level, its direct children, and its path from the zone.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]{1,32}$"
+            },
+            "in": "path",
+            "name": "nodeCode",
+            "required": true,
+            "description": "Network node code, any level, e.g. Z-01 or DT-001. Case-insensitive."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkNodeDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (code invalid_request).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Invalid request (code invalid_request).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown meter, network node or route (meter_not_found, network_node_not_found, route_not_found).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unknown meter, network node or route (meter_not_found, network_node_not_found, route_not_found).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The portal failed or returned something unreadable (portal_unavailable, portal_bad_response).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "The portal failed or returned something unreadable (portal_unavailable, portal_bad_response).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The portal timed out (portal_timeout).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "The portal timed out (portal_timeout).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/network/{nodeCode}/meters": {
+      "get": {
+        "summary": "Meters under a network node",
+        "tags": [
+          "network"
+        ],
+        "description": "All export meters at or below the node, ordered by meterId, paged with limit/offset.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "description": "Maximum records to return."
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "description": "Zero-based index of the first record to return."
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]{1,32}$"
+            },
+            "in": "path",
+            "name": "nodeCode",
+            "required": true,
+            "description": "Network node code, any level, e.g. Z-01 or DT-001. Case-insensitive."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of meters.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeterList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (code invalid_request).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Invalid request (code invalid_request).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown meter, network node or route (meter_not_found, network_node_not_found, route_not_found).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unknown meter, network node or route (meter_not_found, network_node_not_found, route_not_found).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The portal failed or returned something unreadable (portal_unavailable, portal_bad_response).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "The portal failed or returned something unreadable (portal_unavailable, portal_bad_response).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The portal timed out (portal_timeout).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "The portal timed out (portal_timeout).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/status": {
+      "get": {
+        "summary": "Local index status",
+        "tags": [
+          "sync"
+        ],
+        "description": "When the local SQLite index was last synced from the portal export, how many meters it holds, and how the last sync run went. Reads only the local database.",
+        "responses": {
+          "200": {
+            "description": "Index status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncStatus"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "tags": [
@@ -1155,6 +2225,14 @@
     {
       "name": "transformers",
       "description": "Distribution transformers"
+    },
+    {
+      "name": "sync",
+      "description": "Local SQLite index status"
+    },
+    {
+      "name": "network",
+      "description": "Network hierarchy tree and its data-quality issues"
     },
     {
       "name": "health",
