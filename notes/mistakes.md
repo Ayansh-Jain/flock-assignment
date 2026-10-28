@@ -1,25 +1,29 @@
 # Mistakes & dead ends
 
-Honest log, feeds the README Reflection. Entries are added only when they actually happen.
+An honest log of things I got wrong or paths that went nowhere. It feeds the Reflection in the README. I only add an entry when something actually happened — no padding.
 
 ## Phase 1
 
-_None yet._
+Nothing logged here. (The one real Phase 1 slip — claiming the energy data was "exactly 8 days" — I didn't catch until Phase 2, so it's written up there.)
 
 ## Phase 2
 
-- **Phase 1 wrong claim (mine):** I wrote that the energy series was "exactly 8 days". The fixture has 337 readings, which is 7 days plus one reading (23:30 on the first day). Noticed while reading the fixture; corrected in protocol-notes. It matters because the first day can never be a complete day.
-- **Phase 1 plan, dropped:** the first capture plan proposed brute-forcing candidate signature layouts against the live portal. That conflicts with the ground rules, so the layout was read from the frontend JS instead.
-- **Dead end, env-schema:** used `format: 'uri'` for the base URL; env-schema has no `uri` format and threw at startup. Replaced with a pattern.
-- **Dead end, tests:** called `assertNoPendingInterceptors` on a mock pool; it exists only on `MockAgent`. Wrapped in a helper.
-- **Dead end, tooling:** a large multi-file shell heredoc failed with a quoting error and wrote nothing; I switched to writing files one at a time. No impact on the repo.
-- **ESLint:** `n/no-unsupported-features` flagged `process.loadEnvFile` (experimental until Node 22.21); resolved with `allowExperimental` rather than raising `engines`.
-- **Process (Phase 2 review):** my first parser version made one bad export row fail the whole page, and silently dropped skipped days. The author's review changed both (see decisions.md). Lesson: for bulk paths, decide up front what happens to bad rows, and never skip silently.
+- **My original signing plan, scrapped.** My first idea for the capture script was to fire different candidate signature layouts at the live portal until one worked. That's brute-forcing a shared system, which breaks the ground rules, so I dropped it and read the layout out of the frontend JS instead. Should've seen that sooner.
+- **env-schema and `uri`.** I used `format: 'uri'` for the base URL and it threw at startup — env-schema doesn't ship that format. Swapped it for a regex pattern.
+- **Wrong mock method.** I called `assertNoPendingInterceptors` on a mock pool; turns out it only exists on the `MockAgent`. Wrapped it in a helper.
+- **Shell heredoc fought back.** Tried to write several files at once with a big shell heredoc and it failed on a quoting error, writing nothing. Switched to writing files one at a time. No harm to the repo, just wasted a minute.
+- **ESLint vs `process.loadEnvFile`.** The linter flagged it as experimental (it is, until Node 22.21). I allowed it in the lint config rather than bumping the `engines` range.
+- **The one that was actually a process mistake (caught in review).** My first parser made a single bad export row blow up the whole page, and it dropped skipped days without saying anything. The review changed both (see decisions.md). The lesson I took: for a bulk path, decide up front what happens to a bad row, and never drop something silently.
 
 ## Phase 3
 
-- **Dead end, OpenAPI names:** swagger first emitted components as `def-0 ... def-14`. Fixed with the `refResolver` option (names from `$id`).
-- **Dead end, OpenAPI descriptions:** `$ref` responses showed "Default Response". A `description` sibling next to `$ref` works in @fastify/swagger, so it is set per route.
-- **Test mistakes (mine):** two wrong expectations in my own tests (a `q` match count off by one; comparing `request.query`, which has a null prototype, with a plain object). Both were test bugs, not code bugs.
-- **Tooling:** a large shell command mixing several heredocs failed with a quoting error again (same as Phase 2); I wrote files one at a time instead.
-- **Not verified:** graceful shutdown on SIGINT/SIGTERM and the unhandledRejection path were written but not exercised (the server was smoke-tested on Windows with dummy credentials hitting only validation, 404 and /docs routes, then killed).
+- **OpenAPI component names.** Swagger first spat out the schemas as `def-0 ... def-14`, which is useless to read. Fixed it with the `refResolver` option so the names come from each schema's `$id`.
+- **"Default Response" everywhere.** My `$ref` responses all showed up as "Default Response" in the docs. Putting a `description` next to the `$ref` fixes it in @fastify/swagger, so I set one per route.
+- **Two bugs in my own tests.** A `q` match count that was off by one, and comparing `request.query` (which has a null prototype) against a plain object. Both were mistakes in the tests, not the code — but they still cost me time to track down.
+- **The heredoc thing again.** Same quoting failure as Phase 2 when I tried to write several files in one shell command. Wrote them one at a time. I should've remembered the first time.
+- **Didn't actually run the shutdown path.** The SIGINT/SIGTERM handling and the unhandledRejection path are written but never exercised — I smoke-tested the server on Windows with dummy credentials, only hit the validation, 404 and /docs routes, then killed it. So that code is unproven.
+
+## Phase 4
+
+- **I corrupted my own notes file.** A scripted edit of protocol-notes.md turned the literal `"\n"` in the signing message into an actual line break. I spotted it while writing PROTOCOL.md and fixed it by hand, then wrote PROTOCOL.md from the repaired version.
+- **Windows line endings (caught in the audit).** Git warned it would convert `openapi.json` to CRLF on checkout, which would have broken the OpenAPI drift test and `prettier --check` on Windows. Added a `.gitattributes` (`* text=auto eol=lf`) to force LF.

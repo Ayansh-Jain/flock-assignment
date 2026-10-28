@@ -1,87 +1,93 @@
 # Decisions & assumptions
 
-Status: **Decided** (author's choice), **Proposed** (mine, awaiting review), **Assumed** (unverified).
+A running log of the calls I made while building this, roughly in the order I made them. Some I decided up front, some I only settled after seeing how the portal actually behaved, and a few are still just assumptions I never got to confirm — I've tried to be honest about which is which.
 
-## Phase 1: decisions made by the author
+## Phase 1 — the big calls
 
-1. **Meter list source of truth:** `/portal/meters/search` (total 403). The export only enriches meters it covers; meters not in the export get `hierarchy: null`. Upper levels are NOT reconstructed from `dtCode` for now (possible future improvement).
-2. **Export signature:** resolved by reading the frontend JS (see protocol-notes, Bulk path). The secret is fetched from `/portal/keys` at runtime and never stored.
-3. **Hierarchy:** from the export where available, else `null`.
-4. **Daily consumption:** group readings by IST calendar day. Daily total = last reading of the day minus last reading of the previous day (registers are cumulative). Because the first reading is 23:30 on the first day, the first day has no previous-day anchor and incomplete days at the ends are skipped rather than reporting a wrong figure. Document this in the API description.
-5. **Timezone:** timestamps treated as IST; output ISO-8601 with `+05:30`.
-6. **Units:** `kwh` / `kvah` exposed as numbers; OpenAPI description says the unit is assumed kWh / kVAh.
-7. **Session handling:** the client re-logs-in once on any 401 and retries. Cookie flags and lifetime are not investigated.
-8. **Export paging:** our sync pages the export itself (page=2,3,...), one signed request per page with a fresh timestamp, with an upper bound on pages.
-9. **Dependencies:** `tough-cookie` approved (installed at 6.0.2, exact). `npm audit`: 0 vulnerabilities.
-10. **Commit trailer:** use `Co-Authored-By: Ayansh Jain` on commits (no Claude co-author line). The author commits and pushes.
-11. **Fixtures:** no `__data.json` fixture; hierarchy comes from the export.
+These are the ones I locked in early, after poking at the portal in DevTools.
 
-## Assumptions (unverified)
+1. **What counts as "the list of meters":** the search endpoint (`/portal/meters/search`, 403 meters). The bulk export has richer data, but search is the authority on which meters exist. The export only fills in extra detail for the meters it happens to cover; anything it doesn't cover gets `hierarchy: null`. I decided not to try rebuilding the upper hierarchy levels from `dtCode` for now — it's a maybe-later.
+2. **The export signature:** I worked it out by reading the portal's own frontend code rather than guessing (details in protocol-notes). The signing key is fetched fresh from `/portal/keys` each time and never stored.
+3. **Hierarchy:** comes from the export when it's there, otherwise `null`.
+4. **Daily consumption:** group the readings by IST day; a day's usage is its last reading minus the previous day's last reading, since the meter values are running totals. The first reading lands at 23:30, so the first day has nothing to compare against, and any incomplete day at the ends gets skipped rather than reported as a wrong number. This needs explaining in the API docs.
+5. **Timezone:** treat the timestamps as IST and hand them back as ISO-8601 with `+05:30`.
+6. **Units:** expose `kwh`/`kvah` as numbers; the OpenAPI description notes the unit is an assumption (kWh/kVAh).
+7. **Sessions:** if a call comes back 401, log in once more and retry. I didn't dig into cookie flags or exact session lifetime — the re-login covers it either way.
+8. **Export paging:** the sync pages the export itself (page 2, 3, ...), one signed request per page with a fresh timestamp, and with a hard cap on pages so it can't run away.
+9. **Dependencies:** `tough-cookie` is the one I added (pinned at 6.0.2). `npm audit` came back clean.
+10. **Commits:** `Co-Authored-By: Ayansh Jain`, no Claude line. I commit and push myself.
+11. **Fixtures:** no `__data.json` fixture — the hierarchy comes from the export, so I don't need it.
 
-- Energy timestamps (`DD/MM/YYYY HH:mm`, no zone) are IST (UTC+05:30).
-- `kwh` is kWh and `kvah` is kVAh (from field names; no unit in payload).
-- `kwh` / `kvah` are cumulative registers.
-- Export page size is larger than 20 and more export pages exist (UI never loops).
-- Login POST is urlencoded `email` + `password` with an `x-sveltekit-action` header; the capture script relies on this.
-- The 8-day energy window, no gaps/dupes, was seen on the meter(s) checked; assumed for all.
+### Things I assumed in Phase 1 (and never fully checked)
 
-## Phase 2 (portal client + parsers)
 
-All of these are mine and open to review; none were specified by the portal.
+- Those two fields are running totals, not per-reading usage.
+- The export page is bigger than 20 rows and there may be more pages (the UI never loops, so I couldn't tell from it).
+- The clean 8-day energy window with no gaps was what I saw on the meter(s) I checked, and I assumed it holds for all of them. (This one turned out to be slightly wrong — see mistakes.md.)
 
-- **Timeouts:** `AbortSignal.timeout(REQUEST_TIMEOUT_MS)` per attempt (default 20 s; it covers reading the body too). Config values are validated at startup and the config object is frozen.
-- **Retry policy:** retry only timeouts/network errors (`TimeoutError`, `AbortError`, fetch `TypeError`), HTTP 5xx and 429, up to `MAX_RETRIES` (default 3). Backoff is exponential with full jitter (250 ms base, 5 s ceiling). Other 4xx are never retried. After the last attempt the client throws `PortalUnavailable`.
-- **429:** wait for `Retry-After` (seconds or HTTP-date), capped at 30 s; without the header, use the normal backoff.
-- **Re-login trigger:** only `/portal/*` + HTTP 401 + body `{"error":"unauthorized"}`. The jar is reset, one login runs (single-flight), the request is retried once; a second 401 raises `PortalAuthError`. A generation counter makes sure concurrent expired requests trigger one reset, not many.
-- **Login success:** decided from the body (`type: "redirect"`), not the HTTP status. The error message never includes the response, because the failure body echoes the email.
-- **Concurrency:** one `p-limit` around each logical request (login and retries included), default 3, config max 4 (ground rule: 2-4 concurrent).
-- **Export signing:** per CLAUDE.md/Phase 1 scheme. The signing key is fetched via `/portal/keys` on every `fetchExport` call (not cached) and the signature is computed per attempt, so a retry after backoff carries a fresh timestamp. The secret and signature are never logged.
-- **Timestamps:** parsed strictly as `DD/MM/YYYY HH:mm`, real calendar times only, output `YYYY-MM-DDTHH:mm:00+05:30`. Readings are sorted chronologically in the parser.
-- **Daily consumption (refines Phase 1 decision 4):** a day is reported only if it ends at 23:30 and the previous calendar day also ends at 23:30. The first day of the series, which has no anchor, is therefore never reported, and days whose previous day is missing are skipped. **Added by me, please confirm:** a day where the register goes backwards (negative difference, e.g. a reset or meter swap) is skipped rather than reported. Differences are rounded to 2 decimals to remove float noise.
-- **Strictness vs resilience:** every parser throws `PortalParseError` on an unexpected shape. For `/portal/export` that means one malformed row fails the whole page; only 3 export rows have been seen so far. Revisit in Phase 3 (skip-and-log bad rows) if the full dataset shows messy rows.
-- **Unified geo:** export `geo {lat,lng}` and `/geo` `{latitude,longitude}` are both parsed to `{latitude, longitude}` numbers.
-- **Config:** `PORTAL_BASE_URL` is checked with a pattern (`^https?://\S+$`) because env-schema ships no `uri` format. `process.loadEnvFile()` is called only when no override object is passed. ESLint is told to allow it (`allowExperimental`), since the rule flags it below Node 22.21 even though `>=22` runs it.
-- **Test runner glob:** `npm test` runs `node --test "test/**/*.test.js"` instead of bare `node --test`, so `test/helpers.js` is not run as a test file.
-- **Tests use undici's own `fetch`** (injected through `fetchImpl`) with a `MockAgent`, so the real network is never reachable and no global patching of Node's built-in fetch is needed.
+## Phase 2 — the portal client and parsers
 
-### Assumptions still unverified after Phase 2
+These were all my calls while writing the client; none of it is dictated by the portal.
 
-- Unknown-meter behaviour of `/geo` and `/energy` (assumed HTTP 404 maps to `PortalNotFound`); never observed.
-- 403 on `/portal/*` is treated as an auth problem (`PortalAuthError`); never observed.
-- Export pagination is still unknown (see protocol-notes, Open questions).
+- **Timeouts:** each attempt gets `AbortSignal.timeout` (20 s by default, which also covers reading the body). Config is validated at startup and then frozen.
+- **What gets retried:** only timeouts, network blips, 5xx and 429 — up to 3 times, with exponential backoff and jitter (250 ms base, 5 s ceiling). Other 4xx are never retried. If it still fails after the last try, it throws `PortalUnavailable`.
+- **429s:** wait for `Retry-After` if the header's there (capped at 30 s), otherwise just back off normally.
+- **When to re-login:** only on a `/portal/*` call that returns 401 with the portal's `{"error":"unauthorized"}` body. I reset the cookies, log in once (shared across any requests waiting), and retry once; a second 401 gives up with `PortalAuthError`. There's a small generation counter so a burst of expired requests triggers one reset, not a pile of them.
+- **Deciding if login worked:** from the response body (`type: "redirect"`), not the HTTP status. The error message deliberately never includes the response body, because the failure body echoes the email back.
+- **Concurrency:** one `p-limit` wraps each logical request (login and retries included), default 3, max 4 — the ground rule was to stay between 2 and 4 against a shared system.
+- **Signing the export:** per the Phase 1 scheme. The key is fetched from `/portal/keys` on every export call (not cached) and the signature is recomputed per attempt, so a retry after a backoff carries a fresh timestamp. Neither the key nor the signature is ever logged.
+- **Timestamps:** parsed strictly as `DD/MM/YYYY HH:mm`, real dates only, output as `...+05:30`. The parser sorts readings into chronological order.
+- **Daily consumption (tightening the Phase 1 rule):** a day is only reported if it ends at 23:30 and the previous day also ends at 23:30. So the first day (no anchor) never shows up, and any day whose previous day is missing is skipped. *(Originally flagged for the author to confirm — now settled, see the Phase 2 review below: a day where the register goes backwards is skipped too.)* Differences are rounded to 2 decimals to get rid of floating-point noise.
+- **Strict vs forgiving:** every parser throws `PortalParseError` on a shape it doesn't expect. For the export that meant one bad row would fail the whole page — I only had 3 export rows to look at, so I kept it strict and left a note to revisit in Phase 3 once I'd seen the full dataset.
+- **Geo:** the export's `{lat, lng}` and the `/geo` endpoint's `{latitude, longitude}` both get normalised to `{latitude, longitude}` numbers.
+- **Config odds and ends:** `PORTAL_BASE_URL` is checked with a regex because env-schema has no `uri` format. `process.loadEnvFile()` only runs when no override is passed in. ESLint is told to allow it, since the rule flags it below Node 22.21 even though `>=22` runs it fine.
+- **Test glob:** `npm test` runs `node --test "test/**/*.test.js"` rather than bare `node --test`, so `test/helpers.js` isn't picked up as a test.
+- **Tests use undici's own `fetch`** (injected via `fetchImpl`) with a `MockAgent`, so the real network is never reachable and I didn't have to monkey-patch Node's global fetch.
 
-## Phase 2 review: decisions by the author (supersede the matching Phase 2 proposals above)
+### Still unverified after Phase 2
 
-- **Negative daily totals: DECIDED.** A day where the register goes backwards (reset or meter swap) is skipped, not reported. Skips are visible, not silent: `deriveDailyConsumption` now returns `{ days, skipped }`, where `skipped` lists `{ date, reason }` with reasons `register_decreased`, `missing_previous_day` (gap) and `incomplete_day` (interior). The expected edges (the first date, which only anchors the next day, and a final date that stops before 23:30) are not listed. Phase 3 must expose the skipped count on the daily response and/or log it.
-- **Export bad rows: DECIDED.** `parseExport` skips a malformed ROW, continues, and returns `skipped: { count, samples }` (samples capped at 5, each with row index, `meterId` if readable, and the reason, which never contains the raw value). A malformed ENVELOPE (response not an object, `data` not an array, bad `total`) still throws `PortalParseError`. The sync summary in Phase 3 must include these skipped counts and samples. Single-meter parsers (search, geo, energy, transformers) stay STRICT and throw.
-- **Export paging: DECIDED.** Keep "export may fit in one page (~231 KB)" as a recorded assumption. The sync still pages defensively with a bound, and search (403) stays the source of truth for the meter list.
-- **Labelled assumptions kept:** 404 -> `PortalNotFound`, 403 -> `PortalAuthError`; `process.loadEnvFile` allowed in the lint config instead of raising `engines`.
-- **Documentation to write:** PROTOCOL.md must explain that the energy series gives 7 daily totals (24-30 Jun) because its first reading is 23:30 on 23 Jun.
-- **Housekeeping:** `notes/` added to `.prettierignore` so prose is not reflowed. Existing notes were not rewritten.
+- What `/geo` and `/energy` do for a meter that doesn't exist (I assume 404 → `PortalNotFound`, but never saw it).
+- A 403 on `/portal/*` is treated as an auth problem — also never observed.
+- How export paging really behaves (see protocol-notes, open questions).
 
-## Phase 3 (service layer, routes, openapi.json)
+## Phase 2 review — author's calls (these win over the matching proposals above)
 
-Mine unless stated; open to review.
+- **Negative daily totals — settled.** A day where the register goes backwards (a reset or meter swap) is skipped, not reported, and the skip is visible rather than silent: `deriveDailyConsumption` returns `{ days, skipped }`, where each skip is `{ date, reason }` with reasons `register_decreased`, `missing_previous_day` and `incomplete_day`. The expected edges (the first date, and a final date that stops before 23:30) aren't listed as skips. Phase 3 has to surface the skipped count on the response and/or log it.
+- **Bad export rows — settled.** `parseExport` now skips a bad *row*, keeps going, and returns `skipped: { count, samples }` (up to 5 samples, each with the row index, the `meterId` if it's readable, and the reason — never the raw value). A broken *envelope* (not an object, `data` not an array, bad `total`) still throws. The Phase 3 sync summary has to include these counts. The single-meter parsers (search, geo, energy, transformers) stay strict and throw.
+- **Export paging — settled.** "The export might fit in one page (~231 KB)" stays a recorded assumption. The sync still pages defensively with a cap, and search (403) remains the authority on the meter list.
+- **Assumptions kept as-is:** 404 → `PortalNotFound`, 403 → `PortalAuthError`; `process.loadEnvFile` allowed in the lint config instead of bumping `engines`.
+- **Docs to write:** PROTOCOL.md needs to explain why the energy series gives 7 daily totals (24–30 Jun) — because the first reading is at 23:30 on the 23rd.
+- **Housekeeping:** `notes/` added to `.prettierignore` so my prose doesn't get reflowed. I didn't rewrite the existing notes.
 
-- **limit/offset onto portal pages.** The portal pages by 20 (Observed for search and dts). The service always fetches upstream page 1 first (it carries `total` and lets us check `pageSize === 20`), then only the pages the window needs, never beyond the last page, because the portal's behaviour past the end was never observed. Costs: an offset past the end is 1 upstream call; offset >= 20 costs one extra call (page 1). A changed upstream page size raises `PortalParseError` instead of mis-slicing. limit default 50, max 200 (at most 11 upstream pages).
-- **Response wrapper is `{ data, total, limit, offset, fetched_at }`**, not `{ page, pageSize }` as in the brief, because our API pages by limit/offset and echoing page numbers would mislead.
-- **Field names follow the parsers**, so `geo` is `{ latitude, longitude }` (the brief said `{lat, lng}`; the export's `lat/lng` is normalised by the parser). `fetched_at` and `request_id` are snake_case as specified, so naming is deliberately mixed: camelCase for portal-derived fields, snake_case for fields we add. Easy to unify later.
-- **Daily series** carries `kvah` as well as `kwh` (the parser returns both), plus `skippedDays` (count) and `skipped` (`{date, reason}` list), and the service logs a warning when days are skipped.
-- **installType, build, hierarchy are `null` (not omitted)** when the meter is not in the export, so the response shape is stable.
-- **Meter detail = 4 upstream calls and no cache:** search (exact-id check), `/geo`, `/portal/keys` and the full export pull. The export (~230 KB) is fetched on every detail request until the cache extension exists; `loadExportIndex()` in src/service.js is the seam. Detail latency is therefore the slowest in the API.
-- **Export outage degrades, auth does not.** If the export fails with `PortalUnavailable` or `PortalParseError`, the detail still returns with `hierarchy: null` and a warning is logged (the caller cannot tell why it is null). A `PortalAuthError` still fails the request.
-- **Export paging in the service:** bounded to 10 pages, stops when rows seen >= `total`, on an empty page, or on a repeated page (no new meter ids), warning "export may be incomplete" in the last two cases. Bad rows are skipped and logged as count + 5 samples (Phase 2 decision).
-- **Unknown meter** is found via search, matching the id exactly and case-sensitively (search is partial). It is checked on the detail route only; `/consumption` and `/consumption/daily` rely on the portal's 404 for `/energy`, which is still an assumption (never observed).
-- **Error mapping** (single shape `{ error: { code, message, request_id } }`, messages are fixed text, nothing from upstream): validation -> 400 `invalid_request` naming the field; `PortalNotFound` -> 404 `meter_not_found`; unknown route -> 404 `route_not_found`; `PortalUnavailable` whose cause is a timeout -> 504 `portal_timeout`; other `PortalUnavailable` -> 502 `portal_unavailable`; `PortalParseError` -> 502 `portal_bad_response`; other `PortalError` -> 502 `portal_error`; `PortalAuthError` -> 503 `portal_auth_failed` (our credentials, not the caller's); anything else -> 500 `internal_error`. Logged at warn for 4xx and error for 5xx; stack traces appear only in logs.
-- **/health always returns 200** while the process is up; `status: "degraded"` / `portal: "unreachable"` reports the portal. It makes one cheap read-only call to the portal (dts page 1) per request, so do not point a high-frequency prober at it without adding a cache.
-- **Intentional skip: no authentication on our API.** Anyone who can reach the port can read portal data through our credentials. It binds to 127.0.0.1 by default. In production: API key or OAuth at a gateway, TLS termination, per-client rate limits, and request quotas so the shared portal is not hammered.
-- **No CORS** until a web client needs it.
-- **Config:** `NODE_ENV` added to the schema (default `production`); pino-pretty is used only when it is `development`. The `dev` script is now `node --watch src/server.js` (set `NODE_ENV=development` in `.env` for pretty logs).
-- **OpenAPI:** components are named by schema `$id` via swagger's `refResolver`; `src/openapi.js` generates the document and is shared by `scripts/export-openapi.js` and `test/openapi.test.js`. `openapi.json` is generated, so it is in `.prettierignore`.
-- **Meter id parameter** must match `^[A-Za-z0-9_-]{1,32}$` (Assumed from `J100001`); other ids get 400 without touching the portal.
+## Phase 3 — service layer, routes, OpenAPI
 
-## Phase 3 follow-up (author-approved Phase 3, memo folded in)
+Mine unless I say otherwise.
 
-- **Export index memo (supersedes "no cache" for meter detail above).** `loadExportIndex()` in src/service.js now keeps ONE in-process entry for 60 s (`EXPORT_MEMO_TTL_MS`, overridable via `exportTtlMs`). Concurrent callers share a single pull; a failed pull is never kept; there is no invalidation and nothing shared across processes, so data can be up to 60 s stale (and `hierarchy` for a changed meter likewise). Memory is bounded by the dataset (at most 10 export pages). Effect: after the first detail request in a minute, detail costs search + `/geo` only. The general cache (per-endpoint, LRU, freshness policy) remains a Phase 5 extension.
-- **README must say** that `/health` makes a live portal call (dts page 1) on every request, so a fast prober should not be pointed at it. Phase 4 to-do.
-- **Also for Phase 4 docs:** the 7-day / 23:30 explanation in PROTOCOL.md; the unexercised shutdown path; the unobserved portal behaviours (past-the-end page, `/energy` 404 for unknown meter, 403).
+- **limit/offset over the portal's pages.** The portal pages by 20 (confirmed for search and dts). The service always grabs upstream page 1 first (it carries `total` and lets me sanity-check `pageSize === 20`), then only the extra pages the window needs, and never past the last page — I never saw what the portal does beyond the end. Cost-wise: an offset past the end is one call; any offset ≥ 20 costs one extra (page 1). If the upstream page size ever changes it throws `PortalParseError` instead of silently mis-slicing. `limit` defaults to 50, caps at 200 (at most 11 upstream pages).
+- **The list wrapper is `{ data, total, limit, offset, fetched_at }`**, not `{ page, pageSize }` like the brief suggested — our API pages by limit/offset, so echoing page numbers would just mislead.
+- **Field names follow the parsers.** So `geo` is `{ latitude, longitude }` (the brief said `{lat, lng}`; the parser normalises the export's `lat/lng`). `fetched_at` and `request_id` are snake_case as asked, which means the naming is intentionally mixed — camelCase for fields that come from the portal, snake_case for fields we add. Easy to unify later if it bugs anyone.
+- **The daily series** also carries `kvah` (the parser returns both), plus `skippedDays` (a count) and `skipped` (the `{date, reason}` list), and the service logs a warning whenever it skips days.
+- **`installType`, `build`, `hierarchy` are `null`, not left out,** when a meter isn't in the export — keeps the response shape stable.
+- **Meter detail talks to the portal four times** *(this "no cache" note is superseded by the Phase 3 follow-up below — a 60-second memo was added).* Originally: search (exact-id check), `/geo`, `/portal/keys` and the full export pull, with the ~230 KB export fetched on every detail request. `loadExportIndex()` in src/service.js was left as the seam for caching, which is exactly where the memo went.
+- **If the export falls over, detail degrades instead of failing.** A `PortalUnavailable` or `PortalParseError` on the export still returns the meter with `hierarchy: null` and a logged warning (the caller can't tell *why* it's null, which isn't ideal). A `PortalAuthError` still fails the whole request.
+- **Export paging in the service:** capped at 10 pages; stops when it's seen `total` rows, hits an empty page, or sees a repeated page with no new meter ids (warning "export may be incomplete" in the last two). Bad rows are skipped and logged as a count plus 5 samples, per the Phase 2 decision.
+- **Finding an unknown meter:** via search, matching the id exactly and case-sensitively (search itself is partial). Only the detail route checks this; `/consumption` and `/consumption/daily` lean on the portal's 404 for `/energy`, which is still an unconfirmed assumption.
+- **Error mapping** (always the one shape `{ error: { code, message, request_id } }`, fixed messages, nothing from upstream leaked): validation → 400 `invalid_request` naming the field; `PortalNotFound` → 404 `meter_not_found`; unknown route → 404 `route_not_found`; a `PortalUnavailable` caused by a timeout → 504 `portal_timeout`; other `PortalUnavailable` → 502 `portal_unavailable`; `PortalParseError` → 502 `portal_bad_response`; other `PortalError` → 502 `portal_error`; `PortalAuthError` → 503 `portal_auth_failed` (our credentials, not the caller's); anything else → 500 `internal_error`. 4xx log at warn, 5xx at error; stack traces only ever go to the logs.
+- **`/health` always returns 200** while the process is alive; it reports the portal separately as `status: "degraded"` / `portal: "unreachable"`. It makes one cheap read-only call (dts page 1) each time, so don't aim a high-frequency prober at it without a cache.
+- **On purpose: no auth on our API.** Anyone who can reach the port can read portal data through our credentials, so it binds to 127.0.0.1 by default. In production I'd put it behind a gateway with an API key or OAuth, TLS, per-client rate limits and quotas so the shared portal isn't hammered.
+- **No CORS** until something actually needs it.
+- **Config:** `NODE_ENV` added (default `production`); pino-pretty only kicks in when it's `development`. The `dev` script is `node --watch src/server.js` — set `NODE_ENV=development` in `.env` for readable logs.
+- **OpenAPI:** components are named off each schema's `$id`; `src/openapi.js` builds the document and is shared by the export script and the drift test. `openapi.json` is generated, so it's in `.prettierignore`.
+- **The meter id parameter** must match `^[A-Za-z0-9_-]{1,32}$` (assumed from `J100001`); anything else gets a 400 without ever touching the portal.
+
+## Phase 3 follow-up — the export memo
+
+- **A short in-memory copy of the export (this replaces the "no cache" note above).** `loadExportIndex()` now keeps one entry for 60 seconds (`EXPORT_MEMO_TTL_MS`, overridable via `exportTtlMs`). Callers arriving together share a single pull, a failed pull is never kept, and there's no invalidation or cross-process sharing — so data can be up to 60 s stale, and a changed meter's hierarchy likewise. Memory stays bounded by the dataset (at most 10 export pages). The upshot: after the first detail request in a given minute, detail only costs search + `/geo`. A proper per-endpoint cache with a real freshness policy is still a Phase 5 extension.
+- **README needs to say** `/health` makes a live portal call (dts page 1) every time, so don't point a fast prober at it. (Phase 4.)
+- **Also for Phase 4 docs:** the 7-day / 23:30 explanation in PROTOCOL.md; the shutdown path I wrote but never ran; and the portal behaviours I never observed (past-the-end paging, `/energy` 404 for an unknown meter, 403s).
+
+## Phase 4 — documentation
+
+- PROTOCOL.md and README.md are written from these notes and from the real Phase 3 sample outputs (generated from the fixtures through the real routes with a stubbed portal client — and the README says so).
+- The "session lasts about an hour" line comes from the author's Phase 4 brief, not from anything I captured, so PROTOCOL.md flags it as reported-but-unverified.
+- `.gitattributes` forces LF line endings so the OpenAPI drift test stays stable on Windows checkouts.
