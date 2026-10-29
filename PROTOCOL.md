@@ -46,7 +46,7 @@ All are `GET`, cookie-authenticated, read-only.
 
 - **[Observed]** Search: `pageSize` 20, `total` 403, so 21 pages. `page` is 1-based.
 - **[Observed]** Transformers: `pageSize` 20, `total` 40, so 2 pages.
-- **[Observed]** The export response has only `data` and `total`. See section 5 for what its page size seems to be.
+- **[Observed]** The export response has only `data` and `total`. **[Observed, first live sync]** `GET /portal/export?page=1` returns **all 403 rows in one page** with `total: 403`, so the export is a single page. See section 5.
 - **[Not observed]** What any endpoint returns for a page past the last one. The service therefore never requests a page past the last.
 - **[Not observed]** Whether the page size can be changed, and any sort or filter parameters other than `q`.
 
@@ -79,7 +79,7 @@ All are `GET`, cookie-authenticated, read-only.
 - **[Observed]** `/portal/keys` hands the signing secret to **any** logged-in session. The signature therefore proves the caller can run the portal's frontend code, not that it has special access. It is an integrity check at best, not access control.
 - **[Observed]** The portal UI always requests `page=1` and never loops, yet reports "Exported 100 meters".
 - **[Observed]** The `content-length` of the original page-1 response was 231,658 bytes.
-- **[Assumed]** From that size, page 1 may hold the whole dataset (roughly 400 rows at about 575 bytes each) rather than 100. The export's page size, and whether pages 2+ exist, are not confirmed. The service pages the export defensively: bounded, and stopping on an empty or repeated page.
+- **[Observed, first live sync]** Page 1 holds the whole dataset: 403 rows, `total: 403` (about 575 bytes per row, which matches the response size above). The UI's "Exported 100 meters" text is not the export's `total`. What `page=2` returns was **not observed**: the service stops once it has `total` rows, so it never asked. It still pages defensively (bounded, and stopping on an empty or repeated page) in case the dataset grows past one page.
 - **[Unknown]** How long a signature stays valid (the replay window). The service signs each attempt with a fresh timestamp.
 
 ## 6. Data model and normalisation
@@ -94,19 +94,20 @@ All are `GET`, cookie-authenticated, read-only.
 
 **Network hierarchy** **[Observed]** is seven levels in the export, each `{name, code}`: `zone` > `circle` > `division` > `subdivision` > `substation` > `feeder` > `dt`. Search rows only carry a `dtCode`, so a meter outside the export has no hierarchy here (`null`). The upper levels are not reconstructed from `dtCode`.
 
-**Messy hierarchy data.** Every export row carries its own full chain, so the tree is the union of those chains, keyed by code (`/v1/network`). **[Observed]** The saved export fixture holds only 3 rows, and in them every code sits at one level under one parent with one name, `dtCode` equals the DT in the hierarchy, and nothing needs normalising. So none of the cases below has been seen in real data: they are defences, tested on hand-built input. **[Assumed]** The full 403-row export may differ. Each case is reported at `/v1/network/issues` and nothing is dropped:
+**Messy hierarchy data.** Every export row carries its own full chain, so the tree is the union of those chains, keyed by code (`/v1/network`). **[Observed]** The saved export fixture holds only 3 clean rows, so most cases below are tested on hand-built input. **[Observed, first live sync of the full 403 rows]** the real data does contain three of them: **80 `conflicting_parent`**, **8 `duplicate_code_name`** and **14 rows with an empty hierarchy code** (at least at the circle and feeder levels), reported as `incomplete_hierarchy`. The others (`level_conflict`, `orphan_meter`, the `/portal/dts` disagreements) were not seen. Each case is reported at `/v1/network/issues` and nothing is dropped:
 
-| Case                                                                                                          | Handling                                                                                                                               |
-| ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Code differs only by case or whitespace                                                                       | Normalised (trim, upper-case) so it groups; the raw spelling is kept in the node's `aliases`.                                          |
-| Same code under two parents (`conflicting_parent`)                                                            | First-seen parent wins; the disagreement is reported; the meter still lands on its DT.                                                 |
-| Same code, different names (`duplicate_code_name`)                                                            | First-seen name kept; reported.                                                                                                        |
-| Same code at two levels, which would make a cycle (`level_conflict`)                                          | The later use is ignored and reported; the meter goes to `unplaced` (`orphan_meter`). Tree walks are depth-bounded with a visited set. |
-| `dtCode` differs from the DT in the hierarchy (`orphan_meter`)                                                | Placed by the hierarchy; reported.                                                                                                     |
-| Export and `/portal/dts` disagree (`dt_not_in_transformers`, `transformer_without_meters`, `feeder_mismatch`) | Reported only.                                                                                                                         |
-| In portal search but absent from the export (`meter_not_in_export`)                                           | Not in the tree (nothing to place it by); reported. Costs a full search listing, so only `/v1/network/issues` does it.                 |
+| Case                                                                                                          | Handling                                                                                                                                                |
+| ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Code differs only by case or whitespace                                                                       | Normalised (trim, upper-case) so it groups; the raw spelling is kept in the node's `aliases`.                                                           |
+| Same code under two parents (`conflicting_parent`)                                                            | First-seen parent wins; the disagreement is reported; the meter still lands on its DT.                                                                  |
+| Same code, different names (`duplicate_code_name`)                                                            | First-seen name kept; reported.                                                                                                                         |
+| Same code at two levels, which would make a cycle (`level_conflict`)                                          | The later use is ignored and reported; the meter goes to `unplaced` (`orphan_meter`). Tree walks are depth-bounded with a visited set.                  |
+| `dtCode` differs from the DT in the hierarchy (`orphan_meter`)                                                | Placed by the hierarchy; reported.                                                                                                                      |
+| Export and `/portal/dts` disagree (`dt_not_in_transformers`, `transformer_without_meters`, `feeder_mismatch`) | Reported only.                                                                                                                                          |
+| In the export but a level has an empty code (`incomplete_hierarchy`, 14 seen live)                            | The meter is **kept** with that level `null`; in the tree it sits at the deepest valid level above the gap (in no node if the zone is empty). Reported. |
+| In portal search but absent from the export altogether (`meter_not_in_export`)                                | Not in the tree (nothing to place it by); reported. Costs a full search listing, so only `/v1/network/issues` does it.                                  |
 
-**Limitation:** the tree only covers meters present in the export. Treat meter counts as "export meters", and treat `meter_not_in_export` as the size of the gap.
+**Limitation:** the tree only covers meters present in the export. Treat meter counts as "export meters", and treat `meter_not_in_export` as the size of the gap (0 in the live data: all 403 search meters are in the export). Meters with an `incomplete_hierarchy` are counted at the deepest valid level above the gap, so they are in the zone totals but not under the missing level or anything below it.
 
 **Daily consumption** is derived, not provided. For each IST calendar day, the total is the last reading of that day minus the last reading of the previous day. A day is reported only if it ends at 23:30 and the previous day also does.
 
@@ -129,7 +130,7 @@ All are `GET`, cookie-authenticated, read-only.
 
 ## 8. Open questions and not observed
 
-- Behaviour for a page past the last one (all paged endpoints), and the export's real page size and last page.
+- Behaviour for a page past the last one (all paged endpoints, including the export: it is one page of 403, but `page=2` was never requested).
 - What `/portal/meters/<id>/geo` and `/energy` return for an unknown meter. The service assumes HTTP 404 and maps it to "meter not found"; this has never been seen.
 - What the portal returns with HTTP 403. The service treats it as an auth problem; never seen.
 - Signature replay window; session lifetime and cookie flags; rate limiting (no HTTP 429 or `Retry-After` has been seen, though the client honours them).

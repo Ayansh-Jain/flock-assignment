@@ -12,18 +12,14 @@ These are the ones I locked in early, after poking at the portal in DevTools.
 4. **Daily consumption:** group the readings by IST day; a day's usage is its last reading minus the previous day's last reading, since the meter values are running totals. The first reading lands at 23:30, so the first day has nothing to compare against, and any incomplete day at the ends gets skipped rather than reported as a wrong number. This needs explaining in the API docs.
 5. **Timezone:** treat the timestamps as IST and hand them back as ISO-8601 with `+05:30`.
 6. **Units:** expose `kwh`/`kvah` as numbers; the OpenAPI description notes the unit is an assumption (kWh/kVAh).
-7. **Sessions:** if a call comes back 401, log in once more and retry. I didn't dig into cookie flags or exact session lifetime — the re-login covers it either way.
-8. **Export paging:** the sync pages the export itself (page 2, 3, ...), one signed request per page with a fresh timestamp, and with a hard cap on pages so it can't run away.
-9. **Dependencies:** `tough-cookie` is the one I added (pinned at 6.0.2). `npm audit` came back clean.
-10. **Commits:** `Co-Authored-By: Ayansh Jain`, no Claude line. I commit and push myself.
-11. **Fixtures:** no `__data.json` fixture — the hierarchy comes from the export, so I don't need it.
+
 
 ### Things I assumed in Phase 1 (and never fully checked)
 
 
 - Those two fields are running totals, not per-reading usage.
 - The export page is bigger than 20 rows and there may be more pages (the UI never loops, so I couldn't tell from it).
-- The clean 8-day energy window with no gaps was what I saw on the meter(s) I checked, and I assumed it holds for all of them. (This one turned out to be slightly wrong — see mistakes.md.)
+
 
 ## Phase 2 — the portal client and parsers
 
@@ -37,12 +33,6 @@ These were all my calls while writing the client; none of it is dictated by the 
 - **Concurrency:** one `p-limit` wraps each logical request (login and retries included), default 3, max 4 — the ground rule was to stay between 2 and 4 against a shared system.
 - **Signing the export:** per the Phase 1 scheme. The key is fetched from `/portal/keys` on every export call (not cached) and the signature is recomputed per attempt, so a retry after a backoff carries a fresh timestamp. Neither the key nor the signature is ever logged.
 - **Timestamps:** parsed strictly as `DD/MM/YYYY HH:mm`, real dates only, output as `...+05:30`. The parser sorts readings into chronological order.
-- **Daily consumption (tightening the Phase 1 rule):** a day is only reported if it ends at 23:30 and the previous day also ends at 23:30. So the first day (no anchor) never shows up, and any day whose previous day is missing is skipped. *(Originally flagged for the author to confirm — now settled, see the Phase 2 review below: a day where the register goes backwards is skipped too.)* Differences are rounded to 2 decimals to get rid of floating-point noise.
-- **Strict vs forgiving:** every parser throws `PortalParseError` on a shape it doesn't expect. For the export that meant one bad row would fail the whole page — I only had 3 export rows to look at, so I kept it strict and left a note to revisit in Phase 3 once I'd seen the full dataset.
-- **Geo:** the export's `{lat, lng}` and the `/geo` endpoint's `{latitude, longitude}` both get normalised to `{latitude, longitude}` numbers.
-- **Config odds and ends:** `PORTAL_BASE_URL` is checked with a regex because env-schema has no `uri` format. `process.loadEnvFile()` only runs when no override is passed in. ESLint is told to allow it, since the rule flags it below Node 22.21 even though `>=22` runs it fine.
-- **Test glob:** `npm test` runs `node --test "test/**/*.test.js"` rather than bare `node --test`, so `test/helpers.js` isn't picked up as a test.
-- **Tests use undici's own `fetch`** (injected via `fetchImpl`) with a `MockAgent`, so the real network is never reachable and I didn't have to monkey-patch Node's global fetch.
 
 ### Still unverified after Phase 2
 
@@ -55,9 +45,6 @@ These were all my calls while writing the client; none of it is dictated by the 
 - **Negative daily totals — settled.** A day where the register goes backwards (a reset or meter swap) is skipped, not reported, and the skip is visible rather than silent: `deriveDailyConsumption` returns `{ days, skipped }`, where each skip is `{ date, reason }` with reasons `register_decreased`, `missing_previous_day` and `incomplete_day`. The expected edges (the first date, and a final date that stops before 23:30) aren't listed as skips. Phase 3 has to surface the skipped count on the response and/or log it.
 - **Bad export rows — settled.** `parseExport` now skips a bad *row*, keeps going, and returns `skipped: { count, samples }` (up to 5 samples, each with the row index, the `meterId` if it's readable, and the reason — never the raw value). A broken *envelope* (not an object, `data` not an array, bad `total`) still throws. The Phase 3 sync summary has to include these counts. The single-meter parsers (search, geo, energy, transformers) stay strict and throw.
 - **Export paging — settled.** "The export might fit in one page (~231 KB)" stays a recorded assumption. The sync still pages defensively with a cap, and search (403) remains the authority on the meter list.
-- **Assumptions kept as-is:** 404 → `PortalNotFound`, 403 → `PortalAuthError`; `process.loadEnvFile` allowed in the lint config instead of bumping `engines`.
-- **Docs to write:** PROTOCOL.md needs to explain why the energy series gives 7 daily totals (24–30 Jun) — because the first reading is at 23:30 on the 23rd.
-- **Housekeeping:** `notes/` added to `.prettierignore` so my prose doesn't get reflowed. I didn't rewrite the existing notes.
 
 ## Phase 3 — service layer, routes, OpenAPI
 
@@ -74,11 +61,7 @@ Mine unless I say otherwise.
 - **Finding an unknown meter:** via search, matching the id exactly and case-sensitively (search itself is partial). Only the detail route checks this; `/consumption` and `/consumption/daily` lean on the portal's 404 for `/energy`, which is still an unconfirmed assumption.
 - **Error mapping** (always the one shape `{ error: { code, message, request_id } }`, fixed messages, nothing from upstream leaked): validation → 400 `invalid_request` naming the field; `PortalNotFound` → 404 `meter_not_found`; unknown route → 404 `route_not_found`; a `PortalUnavailable` caused by a timeout → 504 `portal_timeout`; other `PortalUnavailable` → 502 `portal_unavailable`; `PortalParseError` → 502 `portal_bad_response`; other `PortalError` → 502 `portal_error`; `PortalAuthError` → 503 `portal_auth_failed` (our credentials, not the caller's); anything else → 500 `internal_error`. 4xx log at warn, 5xx at error; stack traces only ever go to the logs.
 - **`/health` always returns 200** while the process is alive; it reports the portal separately as `status: "degraded"` / `portal: "unreachable"`. It makes one cheap read-only call (dts page 1) each time, so don't aim a high-frequency prober at it without a cache.
-- **On purpose: no auth on our API.** Anyone who can reach the port can read portal data through our credentials, so it binds to 127.0.0.1 by default. In production I'd put it behind a gateway with an API key or OAuth, TLS, per-client rate limits and quotas so the shared portal isn't hammered.
-- **No CORS** until something actually needs it.
-- **Config:** `NODE_ENV` added (default `production`); pino-pretty only kicks in when it's `development`. The `dev` script is `node --watch src/server.js` — set `NODE_ENV=development` in `.env` for readable logs.
-- **OpenAPI:** components are named off each schema's `$id`; `src/openapi.js` builds the document and is shared by the export script and the drift test. `openapi.json` is generated, so it's in `.prettierignore`.
-- **The meter id parameter** must match `^[A-Za-z0-9_-]{1,32}$` (assumed from `J100001`); anything else gets a 400 without ever touching the portal.
+.
 
 ## Phase 3 follow-up — the export memo
 
@@ -97,10 +80,7 @@ Mine unless I say otherwise.
 - **First-seen wins, nothing dropped.** A code under a second parent, with a second name, or at a second level is reported and the first placement is kept. A level conflict (the only way a cycle could arise) means the row cannot be placed: the meter goes to `unplaced` and is reported. Tree walks have a visited set and a depth bound anyway.
 - **Only the issue kinds I could design for are covered, none seen in real data.** The saved export fixture has 3 clean rows. The messy-data handling is tested on hand-built input only; the full 403-row export is unchecked.
 - **`meter_not_in_export` is only computed by `/v1/network/issues`**, because it needs every meter id from portal search (about 21 calls, sequential, bounded to 25 pages, memoised 60 s). The tree endpoints do not pay for it. This is the one place I went beyond "export + /dts"; if you would rather not, drop it and compare totals only.
-- **Memo refactor.** The export memo became a small `memoised(load)` helper inside the service so the network model and the search id list reuse the same one-entry, single-flight, 60 s logic. Behaviour of the export memo is unchanged (existing tests pass).
-- **`/v1/network/issues` is a static route and wins over `/:nodeCode`**, so a node whose code is literally `issues` could not be addressed. Node codes seen are like `Z-01`, so I accepted that.
-- **New error code** `network_node_not_found` (404). Node-code param is validated with `^[A-Za-z0-9_.-]{1,32}$` (assumed from observed codes) and looked up case-insensitively.
-- **`/dts` is read through the same window reader** with limit 200; if it ever holds more than 200 the list is truncated and a warning is logged.
+
 
 ## Phase 5A — bulk sync and local SQLite index
 
@@ -116,3 +96,28 @@ Mine unless I say otherwise.
 - **Data-quality summary in sync** reuses `buildNetwork` with an empty transformer list and drops `dt_not_in_transformers`, so it makes no extra portal calls. The transformer cross-check and search-vs-export check stay in `/v1/network/issues`.
 - **Not verified:** I did not run `npm run sync` against the live portal (the rules forbid it here). It is covered by tests with a mocked portal. The first real run, and what the export does past 403 rows, is yours to confirm.
 - **Dependency note:** `.env.example` got a commented `DB_PATH`; `data/` is git-ignored.
+
+## Phase 5C — caching and robustness
+
+- **Own cache, no `lru-cache`.** `src/cache.js` (about 130 lines with comments) is a Map-based TTL + LRU: a hit re-inserts the key, an insert past `CACHE_MAX_ENTRIES` drops the oldest. No dependency added, as the brief defaulted to. It replaces the 60 s `memoised()` helper in `service.js`, which is deleted; `export-pull.js` paging is unchanged.
+- **TTLs (all [Assumed], per kind, env-tunable):** energy 2 min, meter detail and the search-id list 5 min, export 10 min, transformers 30 min. The reasoning is in the README; the honest caveat is that I never observed how often the portal data changes, so these are judgements. `0` disables a kind.
+- **What is cached.** Cache keys: `meter:<id>` (search row + geo, loaded together so an unknown id is a 404 before geo is asked), `energy:<id>` (shared by raw and daily), `dts:<page>`, `export`, `search-ids`. Not cached: `GET /v1/meters` live list (source of truth, free-text `q`), `/health` (must be a real probe).
+- **The derived network tree is not cached.** It is rebuilt from the cached export and transformers per request (cheap at 403 meters). Caching it would store a value computed from possibly stale inputs and then call it fresh for another 10 minutes.
+- **`fetched_at` changed meaning slightly:** it is now when the data was actually fetched (the cache entry's timestamp), not when the request arrived. For a composite response (meter detail) it is the oldest part's, so a response never looks fresher than its data. Live-list and health responses still use request time.
+- **Stale-on-error.** Any `PortalError` except `PortalNotFound` may fall back to an entry expired less than `CACHE_STALE_GRACE_MS` (15 min) ago. 404 stays 404 so a deleted meter does not live on. Body gets `stale: true` (absent otherwise, so existing consumers are unaffected), plus `X-Cache: STALE`. Worst state wins across parts: if only the export part is stale, the whole meter response says STALE.
+- **How the header gets out.** The service returns the body with its cache state on a Symbol property; a `preSerialization` hook in `app.js` turns it into `X-Cache`. The symbol is invisible to JSON/serialisation, so no route or schema carries a header field in the body. Routes declare the header for OpenAPI via `cachedOk()` in `schemas.js`.
+- **Coalescing** lives in the cache (one in-flight promise per key, cleaned up by every waiter so a synchronously throwing loader cannot leave a stuck entry). I did not reuse the login single-flight code: that one is tied to session state, and a generic keyed version was simpler than parameterising it.
+- **Circuit breaker: built, ~50 lines with comments** (`src/portal/breaker.js`), so it stays. A failure is a request that still failed after its retries (`PortalUnavailable`); any portal answer counts as success. Defaults 5 failures, 30 s cool-off. Half-open lets exactly one probe through. `PortalCircuitOpen` extends `PortalUnavailable` (so the existing export-degrade and stale paths treat it like an outage) and maps to 503 `portal_circuit_open` with `Retry-After`.
+- **Breaker sits around retries, not inside them,** so one flaky request does not burn the budget; it counts logical requests. Login goes through it too.
+- **`/health`:** adds `circuit` and `cache` counters; `degraded` if the portal is unreachable or the circuit is not closed. It is still a real call, so when the circuit is half-open the health check is the probe. Counters are since process start and are not a metrics system.
+- **Reviewed, not changed:** keep-alive (Node's built-in fetch reuses connections; a connection the portal closed shows up as a network error and the existing retry covers it), timeouts (`AbortSignal.timeout` covers body reads too), 429/`Retry-After` (honoured, capped 30 s), re-login on 401 (single-flight, one retry).
+
+
+## Incomplete hierarchy rows (after the first live run)
+
+- **Keep, do not drop.** The live export has 14 rows with an empty code at one or more hierarchy levels. The parser used to reject the whole row, so those meters vanished from the index and the tree (389 instead of 403). Now `parseHierarchy` turns a level with no usable code (not an object, name not a string, or blank code) into `null` and keeps the row. A `hierarchy` that is not an object at all is still a malformed row and is skipped.
+- **Tree placement.** The walk stops at the first unusable level; the meter sits at the deepest valid ancestor and is counted there and above. Levels below the gap are not attached to a guessed parent. If the zone itself is unusable the meter is in `unplaced`. This means zone totals add up to 403 but a gap-meter is not under its own feeder or DT in the tree, even though meter detail still shows those deeper levels.
+- **New issue type `incomplete_hierarchy`** (meter id, deepest valid node code, and which levels lack a code). `meter_not_in_export` now means only "in portal search, absent from the export". The `dtCode` mismatch check (`orphan_meter`) only runs when the meter reached its DT node.
+- **Index.** Hierarchy columns are nullable. An index file created by the earlier version (columns NOT NULL) is detected on open and emptied, with its run history cleared, so `/v1/sync/status` says "never synced" and the next `npm run sync` refills it. Chosen over `ALTER TABLE` because the index is rebuildable and SQLite cannot drop NOT NULL in place.
+- **Schema.** `HierarchyNode` is now nullable, so each level of `hierarchy` in meter detail can be `null`.
+- **Live result:** sync stores 403 and rejects 0; `/v1/network` zone totals sum to 403 (189 + 101 + 113); `/near` and filters see all 403; issues are 80 `conflicting_parent`, 14 `incomplete_hierarchy`, 8 `duplicate_code_name`, and no `meter_not_in_export`.
