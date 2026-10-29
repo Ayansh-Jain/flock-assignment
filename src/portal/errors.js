@@ -28,6 +28,20 @@ export class PortalUnavailable extends PortalError {
   static code = 'PORTAL_UNAVAILABLE';
 }
 
+/** The circuit breaker is open: the call was refused without contacting the portal. */
+export class PortalCircuitOpen extends PortalUnavailable {
+  static code = 'PORTAL_CIRCUIT_OPEN';
+
+  /**
+   * @param {string} message
+   * @param {{ retryAfterSeconds: number }} options
+   */
+  constructor(message, { retryAfterSeconds }) {
+    super(message);
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
 /** A response did not have the shape we rely on. Carries the path, never the raw body. */
 export class PortalParseError extends PortalError {
   static code = 'PORTAL_PARSE';

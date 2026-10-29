@@ -14,13 +14,13 @@ CREATE TABLE IF NOT EXISTS meters (
   install_type TEXT NOT NULL,
   build TEXT NOT NULL,
   dt_code TEXT NOT NULL,
-  zone_code TEXT NOT NULL, zone_name TEXT NOT NULL,
-  circle_code TEXT NOT NULL, circle_name TEXT NOT NULL,
-  division_code TEXT NOT NULL, division_name TEXT NOT NULL,
-  subdivision_code TEXT NOT NULL, subdivision_name TEXT NOT NULL,
-  substation_code TEXT NOT NULL, substation_name TEXT NOT NULL,
-  feeder_code TEXT NOT NULL, feeder_name TEXT NOT NULL,
-  dt_node_code TEXT NOT NULL, dt_node_name TEXT NOT NULL,
+  zone_code TEXT, zone_name TEXT,
+  circle_code TEXT, circle_name TEXT,
+  division_code TEXT, division_name TEXT,
+  subdivision_code TEXT, subdivision_name TEXT,
+  substation_code TEXT, substation_name TEXT,
+  feeder_code TEXT, feeder_name TEXT,
+  dt_node_code TEXT, dt_node_name TEXT,
   latitude REAL NOT NULL,
   longitude REAL NOT NULL,
   synced_at TEXT NOT NULL
@@ -113,13 +113,27 @@ export function openIndexDb(path) {
   const db = new DatabaseSync(path);
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA busy_timeout = 5000');
+  dropIfHierarchyRequired(db);
   db.exec(SCHEMA);
   return db;
 }
 
+/**
+ * Early index files required every hierarchy level. The index is rebuildable, so such a file is
+ * emptied (and its run history cleared, so status honestly says "never synced") and the next
+ * `npm run sync` refills it.
+ */
+function dropIfHierarchyRequired(db) {
+  const column = db
+    .prepare('SELECT "notnull" AS required FROM pragma_table_info(\'meters\') WHERE name = ?')
+    .get('zone_code');
+  if (column?.required === 1) db.exec('DROP TABLE meters; DELETE FROM sync_runs');
+}
+
 function toRow(meter, syncedAt) {
   const { hierarchy: h, geo } = meter;
-  const code = (level) => normaliseCode(h[level].code);
+  const code = (level) => (h[level] ? normaliseCode(h[level].code) : null);
+  const name = (level) => h[level]?.name ?? null;
   return [
     meter.meterId,
     meter.serialNo,
@@ -130,19 +144,19 @@ function toRow(meter, syncedAt) {
     meter.build,
     normaliseCode(meter.dtCode),
     code('zone'),
-    h.zone.name,
+    name('zone'),
     code('circle'),
-    h.circle.name,
+    name('circle'),
     code('division'),
-    h.division.name,
+    name('division'),
     code('subdivision'),
-    h.subdivision.name,
+    name('subdivision'),
     code('substation'),
-    h.substation.name,
+    name('substation'),
     code('feeder'),
-    h.feeder.name,
+    name('feeder'),
     code('dt'),
-    h.dt.name,
+    name('dt'),
     geo.latitude,
     geo.longitude,
     syncedAt,

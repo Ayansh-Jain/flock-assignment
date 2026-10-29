@@ -24,7 +24,12 @@ function meter(meterId, overrides = {}, dtCode = 'DT-001') {
   };
   const hierarchy = {};
   for (const level of LEVELS) {
-    const [code, name] = overrides[level] ?? defaults[level];
+    const override = overrides[level];
+    if (override === null) {
+      hierarchy[level] = null;
+      continue;
+    }
+    const [code, name] = override ?? defaults[level];
     hierarchy[level] = { code, name };
   }
   return {
@@ -106,10 +111,40 @@ describe('buildNetwork on messy data', () => {
     }
   });
 
-  test('a blank code leaves the meter unplaced but listed', () => {
-    const { tree, issues } = build([meter('J1', { substation: ['  ', 'x'] })], []);
+  test('a missing level keeps the meter, placed at the deepest valid level', () => {
+    const { tree, issues } = build([meter('J1'), meter('J2', { substation: null })], []);
+    assert.equal(tree.unplaced.length, 0);
+    assert.equal(tree.nodes.get('Z-01').meterCount, 2, 'both meters are counted in the zone');
+    assert.equal(tree.nodes.get('SS-01').meterCount, 1, 'only the complete one reaches below');
+    assert.equal(tree.nodes.get('SD-01').meters.length, 1, 'J2 sits at the subdivision');
+    assert.deepEqual(
+      collectMeters(tree, tree.nodes.get('Z-01')).map((m) => m.meterId),
+      ['J1', 'J2'],
+    );
+    const incomplete = issues.filter((issue) => issue.type === 'incomplete_hierarchy');
+    assert.equal(incomplete.length, 1);
+    assert.equal(incomplete[0].meterId, 'J2');
+    assert.equal(incomplete[0].code, 'SD-01');
+    assert.match(incomplete[0].detail, /substation/);
+    assert.ok(!issues.some((issue) => issue.type === 'meter_not_in_export'));
+  });
+
+  test('a blank code is treated like a missing level', () => {
+    const { tree, issues } = build([meter('J1', { circle: ['  ', 'x'] })], []);
+    assert.equal(tree.nodes.get('Z-01').meters.length, 1);
+    assert.deepEqual(issueTypes(issues), ['incomplete_hierarchy']);
+  });
+
+  test('levels below a missing one are not attached to a wrong parent', () => {
+    const { tree } = build([meter('J1', { circle: null })], []);
+    assert.deepEqual([...tree.nodes.keys()], ['Z-01'], 'nothing below the gap is created');
+  });
+
+  test('a missing zone leaves the meter unplaced but listed', () => {
+    const { tree, issues } = build([meter('J1', { zone: null })], []);
     assert.equal(tree.unplaced.length, 1);
-    assert.deepEqual(issueTypes(issues), ['orphan_meter', 'orphan_meter']);
+    assert.deepEqual(issueTypes(issues), ['incomplete_hierarchy']);
+    assert.equal(issues[0].code, null);
   });
 
   test('cross-checks /portal/dts in both directions', () => {

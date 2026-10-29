@@ -1,4 +1,4 @@
-import { errorResponses, limitQuery, offsetQuery } from '../schemas.js';
+import { cachedOk, errorResponses, limitQuery, offsetQuery } from '../schemas.js';
 
 /** @param {import('fastify').FastifyInstance} app */
 export default async function transformerRoutes(app) {
@@ -15,7 +15,7 @@ export default async function transformerRoutes(app) {
           properties: { limit: limitQuery, offset: offsetQuery },
         },
         response: {
-          200: { description: 'A page of transformers.', $ref: 'TransformerList#' },
+          200: cachedOk('TransformerList#', 'A page of transformers.'),
           400: errorResponses[400],
           502: errorResponses[502],
           503: errorResponses[503],

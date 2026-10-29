@@ -20,6 +20,7 @@ import { fixtureBody } from './helpers.js';
 
 const FETCHED_AT = '2026-10-28T10:00:00.000Z';
 const KNOWN_ID = 'J100000';
+const CACHE_STATS = { entries: 2, hits: 5, misses: 2, stale: 0 };
 
 let fixtures;
 before(async () => {
@@ -85,7 +86,13 @@ function createFakeService(overrides = {}) {
       };
     },
     async checkPortal() {
-      return { status: 'ok', portal: 'reachable', fetched_at: FETCHED_AT };
+      return {
+        status: 'ok',
+        portal: 'reachable',
+        circuit: 'closed',
+        cache: CACHE_STATS,
+        fetched_at: FETCHED_AT,
+      };
     },
     ...overrides,
   };
@@ -129,6 +136,8 @@ describe('happy paths', () => {
     assert.deepEqual(response.json(), {
       status: 'ok',
       portal: 'reachable',
+      circuit: 'closed',
+      cache: CACHE_STATS,
       fetched_at: FETCHED_AT,
     });
   });
@@ -249,7 +258,14 @@ describe('happy paths', () => {
     await app.close();
     await start({
       async checkPortal() {
-        return { status: 'ok', portal: 'reachable', fetched_at: FETCHED_AT, internalToken: 'x' };
+        return {
+          status: 'ok',
+          portal: 'reachable',
+          circuit: 'closed',
+          cache: CACHE_STATS,
+          fetched_at: FETCHED_AT,
+          internalToken: 'x',
+        };
       },
     });
     assert.ok(!('internalToken' in (await get('/health')).json()));

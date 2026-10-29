@@ -2,6 +2,7 @@ import { NetworkNodeNotFound } from './hierarchy.js';
 import { IndexNotSynced } from './index-store.js';
 import {
   PortalAuthError,
+  PortalCircuitOpen,
   PortalError,
   PortalNotFound,
   PortalParseError,
@@ -54,6 +55,14 @@ function classify(error, request) {
       message: 'This service could not authenticate with the upstream portal.',
     };
   }
+  if (error instanceof PortalCircuitOpen) {
+    return {
+      status: 503,
+      code: 'portal_circuit_open',
+      message: 'The upstream portal is failing; requests are paused briefly. Retry shortly.',
+      retryAfterSeconds: error.retryAfterSeconds,
+    };
+  }
   if (error instanceof PortalUnavailable) {
     return TIMEOUT_ERROR_NAMES.has(error.cause?.name)
       ? { status: 504, code: 'portal_timeout', message: 'The upstream portal timed out.' }
@@ -94,6 +103,7 @@ export function registerErrorHandlers(app) {
       { err: error, code: result.code, status: result.status },
       'request failed',
     );
+    if (result.retryAfterSeconds) reply.header('retry-after', result.retryAfterSeconds);
     return reply.status(result.status).send(body(request, result));
   });
 

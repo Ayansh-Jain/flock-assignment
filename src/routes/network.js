@@ -1,4 +1,4 @@
-import { errorResponses, limitQuery, offsetQuery } from '../schemas.js';
+import { cachedOk, errorResponses, limitQuery, offsetQuery } from '../schemas.js';
 
 const nodeCodeParam = {
   type: 'object',
@@ -30,7 +30,7 @@ export default async function networkRoutes(app) {
           'Top-level nodes (zones) of the network hierarchy, with child and meter counts. Built from the portal export, so only meters present in the export are counted.',
         tags: ['network'],
         response: {
-          200: { description: 'The zones.', $ref: 'NetworkNodeList#' },
+          200: cachedOk('NetworkNodeList#', 'The zones.'),
           ...upstreamErrors,
         },
       },
@@ -44,10 +44,10 @@ export default async function networkRoutes(app) {
       schema: {
         summary: 'Network data-quality issues',
         description:
-          'Inconsistencies found while building the tree: conflicting parents, duplicate codes with different names, orphan meters, disagreements with the transformer list, and meters in portal search that the export lacks. Nothing is dropped; each finding is reported. Slower than the other network routes: it also lists every meter from portal search (memoised for a minute).',
+          'Inconsistencies found while building the tree: conflicting parents, duplicate codes with different names, orphan meters, disagreements with the transformer list, and meters in portal search that the export lacks. Nothing is dropped; each finding is reported. Slower than the other network routes: it also lists every meter from portal search (cached).',
         tags: ['network'],
         response: {
-          200: { description: 'The findings.', $ref: 'NetworkIssueList#' },
+          200: cachedOk('NetworkIssueList#', 'The findings.'),
           ...upstreamErrors,
         },
       },
@@ -64,7 +64,7 @@ export default async function networkRoutes(app) {
         tags: ['network'],
         params: nodeCodeParam,
         response: {
-          200: { description: 'The node.', $ref: 'NetworkNodeDetail#' },
+          200: cachedOk('NetworkNodeDetail#', 'The node.'),
           400: errorResponses[400],
           404: errorResponses[404],
           ...upstreamErrors,
@@ -88,7 +88,7 @@ export default async function networkRoutes(app) {
           properties: { limit: limitQuery, offset: offsetQuery },
         },
         response: {
-          200: { description: 'A page of meters.', $ref: 'MeterList#' },
+          200: cachedOk('MeterList#', 'A page of meters.'),
           400: errorResponses[400],
           404: errorResponses[404],
           ...upstreamErrors,

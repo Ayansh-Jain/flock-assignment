@@ -6,11 +6,12 @@ const SKIP_SAMPLE_SIZE = 5;
 
 /**
  * Pull the whole portal export through the signed client, one page at a time. Shared by the
- * request-path memo (src/service.js) and the bulk sync (src/sync.js) so both page the same way.
+ * cache (src/service.js) and the bulk sync (src/sync.js) so both page the same way.
  *
- * Defensive because the export's real page size and past-the-end behaviour were never observed:
- * the loop is bounded, stops once `total` rows were seen, stops on an empty page, and stops on a
- * repeated page that adds no new meter. Malformed rows are skipped and logged, never fatal.
+ * Observed live: the export is a single page holding all rows. Still defensive, because the
+ * past-the-end behaviour was never observed: the loop is bounded, stops once `total` rows were
+ * seen, stops on an empty page, and stops on a repeated page that adds no new meter. Rows that
+ * cannot be parsed at all are skipped and logged, never fatal.
  *
  * @param {object} options
  * @param {{ fetchExport: (args: { page: number }) => Promise<unknown> }} options.portalClient

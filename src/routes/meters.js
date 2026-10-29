@@ -1,5 +1,5 @@
 import { hasIndexFilters } from '../index-service.js';
-import { errorResponses, limitQuery, offsetQuery } from '../schemas.js';
+import { cachedOk, errorResponses, limitQuery, offsetQuery } from '../schemas.js';
 
 const codePattern = '^[A-Za-z0-9_.-]{1,32}$';
 
@@ -149,7 +149,7 @@ export default async function meterRoutes(app) {
           'Search row plus location. installType, build and hierarchy come from the portal export and are null when the meter is not in it (or the export is unavailable).',
         tags: ['meters'],
         params: meterIdParam,
-        response: { 200: { description: 'The meter.', $ref: 'Meter#' }, ...meterErrors },
+        response: { 200: cachedOk('Meter#', 'The meter.'), ...meterErrors },
       },
     },
     async (request) => app.service.getMeter(request.params.meterId),
@@ -165,7 +165,7 @@ export default async function meterRoutes(app) {
         tags: ['consumption'],
         params: meterIdParam,
         response: {
-          200: { description: 'Raw readings, oldest first.', $ref: 'ConsumptionSeries#' },
+          200: cachedOk('ConsumptionSeries#', 'Raw readings, oldest first.'),
           ...meterErrors,
         },
       },
@@ -183,7 +183,7 @@ export default async function meterRoutes(app) {
         tags: ['consumption'],
         params: meterIdParam,
         response: {
-          200: { description: 'Daily totals and skipped days.', $ref: 'DailyConsumptionSeries#' },
+          200: cachedOk('DailyConsumptionSeries#', 'Daily totals and skipped days.'),
           ...meterErrors,
         },
       },

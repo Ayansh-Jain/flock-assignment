@@ -70,6 +70,8 @@
       },
       "HierarchyNode": {
         "type": "object",
+        "nullable": true,
+        "description": "One level of the chain. null when the export gave this level no usable code (see incomplete_hierarchy in /v1/network/issues).",
         "additionalProperties": false,
         "required": [
           "name",
@@ -87,7 +89,7 @@
       "Hierarchy": {
         "type": "object",
         "nullable": true,
-        "description": "Position in the network, top to bottom. null when the meter is not in the portal export.",
+        "description": "Position in the network, top to bottom. null when the meter is not in the portal export; an individual level is null when the export gave it no usable code.",
         "additionalProperties": false,
         "required": [
           "zone",
@@ -180,6 +182,10 @@
           "hierarchy": {
             "$ref": "#/components/schemas/Hierarchy"
           },
+          "stale": {
+            "type": "boolean",
+            "description": "Present and true only when the portal failed and this is an older cached copy; fetched_at then says how old. See the X-Cache header."
+          },
           "fetched_at": {
             "type": "string",
             "format": "date-time",
@@ -234,6 +240,10 @@
             "type": "string",
             "format": "date-time",
             "description": "index only: when the index data was last synced from the portal export."
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "Present and true only when the portal failed and this is an older cached copy; fetched_at then says how old. See the X-Cache header."
           }
         }
       },
@@ -482,6 +492,10 @@
               "$ref": "#/components/schemas/ConsumptionReading"
             }
           },
+          "stale": {
+            "type": "boolean",
+            "description": "Present and true only when the portal failed and this is an older cached copy; fetched_at then says how old. See the X-Cache header."
+          },
           "fetched_at": {
             "type": "string",
             "format": "date-time",
@@ -566,6 +580,10 @@
             "items": {
               "$ref": "#/components/schemas/SkippedDay"
             }
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "Present and true only when the portal failed and this is an older cached copy; fetched_at then says how old. See the X-Cache header."
           },
           "fetched_at": {
             "type": "string",
@@ -713,6 +731,10 @@
             "type": "integer",
             "minimum": 0
           },
+          "stale": {
+            "type": "boolean",
+            "description": "Present and true only when the portal failed and this is an older cached copy; fetched_at then says how old. See the X-Cache header."
+          },
           "fetched_at": {
             "type": "string",
             "format": "date-time",
@@ -746,6 +768,10 @@
             },
             "description": "From the zone down to this node, inclusive."
           },
+          "stale": {
+            "type": "boolean",
+            "description": "Present and true only when the portal failed and this is an older cached copy; fetched_at then says how old. See the X-Cache header."
+          },
           "fetched_at": {
             "type": "string",
             "format": "date-time",
@@ -767,6 +793,7 @@
             "type": "string",
             "enum": [
               "orphan_meter",
+              "incomplete_hierarchy",
               "conflicting_parent",
               "duplicate_code_name",
               "level_conflict",
@@ -775,7 +802,7 @@
               "transformer_without_meters",
               "feeder_mismatch"
             ],
-            "description": "orphan_meter: dtCode disagrees with the hierarchy, or the meter fits no node. conflicting_parent: a code sits under two parents. duplicate_code_name: a code has two names. level_conflict: a code is used at two levels. meter_not_in_export: in portal search, absent from the export. dt_not_in_transformers / transformer_without_meters / feeder_mismatch: export and /portal/dts disagree."
+            "description": "orphan_meter: dtCode disagrees with the hierarchy, or the meter fits no node. incomplete_hierarchy: the meter IS in the export but one or more levels have no usable code; it sits at the deepest valid level (or in no node if the zone is missing). conflicting_parent: a code sits under two parents. duplicate_code_name: a code has two names. level_conflict: a code is used at two levels. meter_not_in_export: in portal search, absent from the export altogether. dt_not_in_transformers / transformer_without_meters / feeder_mismatch: export and /portal/dts disagree."
           },
           "code": {
             "type": "string",
@@ -811,6 +838,10 @@
             "type": "integer",
             "minimum": 0
           },
+          "stale": {
+            "type": "boolean",
+            "description": "Present and true only when the portal failed and this is an older cached copy; fetched_at then says how old. See the X-Cache header."
+          },
           "fetched_at": {
             "type": "string",
             "format": "date-time",
@@ -824,6 +855,8 @@
         "required": [
           "status",
           "portal",
+          "circuit",
+          "cache",
           "fetched_at"
         ],
         "properties": {
@@ -833,7 +866,7 @@
               "ok",
               "degraded"
             ],
-            "description": "degraded = this service is up but the portal is not."
+            "description": "degraded = this service is up but the portal is unreachable or the circuit breaker is not closed."
           },
           "portal": {
             "type": "string",
@@ -841,6 +874,45 @@
               "reachable",
               "unreachable"
             ]
+          },
+          "circuit": {
+            "type": "string",
+            "enum": [
+              "closed",
+              "open",
+              "half-open"
+            ],
+            "description": "Circuit breaker: open = recent consecutive portal failures, calls fail fast for a short cool-off; half-open = the next call is a probe."
+          },
+          "cache": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "entries",
+              "hits",
+              "misses",
+              "stale"
+            ],
+            "description": "Live-read cache counters since start.",
+            "properties": {
+              "entries": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "hits": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "misses": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "stale": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Stale copies served after a failed refresh."
+              }
+            }
           },
           "fetched_at": {
             "type": "string",
@@ -1073,11 +1145,11 @@
             }
           },
           "503": {
-            "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+            "description": "This service could not log in to the portal (portal_auth_failed), the portal is failing and calls are paused for a short cool-off (portal_circuit_open, with Retry-After), or the local index has never been synced (index_not_synced).",
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+                  "description": "This service could not log in to the portal (portal_auth_failed), the portal is failing and calls are paused for a short cool-off (portal_circuit_open, with Retry-After), or the local index has never been synced (index_not_synced).",
                   "type": "object",
                   "required": [
                     "error"
@@ -1210,11 +1282,11 @@
             }
           },
           "503": {
-            "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+            "description": "This service could not log in to the portal (portal_auth_failed), the portal is failing and calls are paused for a short cool-off (portal_circuit_open, with Retry-After), or the local index has never been synced (index_not_synced).",
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+                  "description": "This service could not log in to the portal (portal_auth_failed), the portal is failing and calls are paused for a short cool-off (portal_circuit_open, with Retry-After), or the local index has never been synced (index_not_synced).",
                   "type": "object",
                   "required": [
                     "error"
@@ -1253,6 +1325,19 @@
         "responses": {
           "200": {
             "description": "The meter.",
+            "headers": {
+              "x-cache": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "HIT",
+                    "MISS",
+                    "STALE"
+                  ]
+                },
+                "description": "HIT = served from cache; MISS = fetched from the portal now; STALE = the portal failed and an older cached copy is served (body has stale: true)."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1319,11 +1404,11 @@
             }
           },
           "503": {
-            "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+            "description": "This service could not log in to the portal (portal_auth_failed), the portal is failing and calls are paused for a short cool-off (portal_circuit_open, with Retry-After), or the local index has never been synced (index_not_synced).",
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+                  "description": "This service could not log in to the portal (portal_auth_failed), the portal is failing and calls are paused for a short cool-off (portal_circuit_open, with Retry-After), or the local index has never been synced (index_not_synced).",
                   "type": "object",
                   "required": [
                     "error"
@@ -1381,6 +1466,19 @@
         "responses": {
           "200": {
             "description": "Raw readings, oldest first.",
+            "headers": {
+              "x-cache": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "HIT",
+                    "MISS",
+                    "STALE"
+                  ]
+                },
+                "description": "HIT = served from cache; MISS = fetched from the portal now; STALE = the portal failed and an older cached copy is served (body has stale: true)."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1447,11 +1545,11 @@
             }
           },
           "503": {
-            "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+            "description": "This service could not log in to the portal (portal_auth_failed), the portal is failing and calls are paused for a short cool-off (portal_circuit_open, with Retry-After), or the local index has never been synced (index_not_synced).",
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+                  "description": "This service could not log in to the portal (portal_auth_failed), the portal is failing and calls are paused for a short cool-off (portal_circuit_open, with Retry-After), or the local index has never been synced (index_not_synced).",
                   "type": "object",
                   "required": [
                     "error"
@@ -1509,6 +1607,19 @@
         "responses": {
           "200": {
             "description": "Daily totals and skipped days.",
+            "headers": {
+              "x-cache": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "HIT",
+                    "MISS",
+                    "STALE"
+                  ]
+                },
+                "description": "HIT = served from cache; MISS = fetched from the portal now; STALE = the portal failed and an older cached copy is served (body has stale: true)."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1575,11 +1686,11 @@
             }
           },
           "503": {
-            "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+            "description": "This service could not log in to the portal (portal_auth_failed), the portal is failing and calls are paused for a short cool-off (portal_circuit_open, with Retry-After), or the local index has never been synced (index_not_synced).",
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+                  "description": "This service could not log in to the portal (portal_auth_failed), the portal is failing and calls are paused for a short cool-off (portal_circuit_open, with Retry-After), or the local index has never been synced (index_not_synced).",
                   "type": "object",
                   "required": [
                     "error"
@@ -1650,6 +1761,19 @@
         "responses": {
           "200": {
             "description": "A page of transformers.",
+            "headers": {
+              "x-cache": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "HIT",
+                    "MISS",
+                    "STALE"
+                  ]
+                },
+                "description": "HIT = served from cache; MISS = fetched from the portal now; STALE = the portal failed and an older cached copy is served (body has stale: true)."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1697,11 +1821,11 @@
             }
           },
           "503": {
-            "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+            "description": "This service could not log in to the portal (portal_auth_failed), the portal is failing and calls are paused for a short cool-off (portal_circuit_open, with Retry-After), or the local index has never been synced (index_not_synced).",
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+                  "description": "This service could not log in to the portal (portal_auth_failed), the portal is failing and calls are paused for a short cool-off (portal_circuit_open, with Retry-After), or the local index has never been synced (index_not_synced).",
                   "type": "object",
                   "required": [
                     "error"
@@ -1747,6 +1871,19 @@
         "responses": {
           "200": {
             "description": "The zones.",
+            "headers": {
+              "x-cache": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "HIT",
+                    "MISS",
+                    "STALE"
+                  ]
+                },
+                "description": "HIT = served from cache; MISS = fetched from the portal now; STALE = the portal failed and an older cached copy is served (body has stale: true)."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1775,11 +1912,11 @@
             }
           },
           "503": {
-            "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+            "description": "This service could not log in to the portal (portal_auth_failed), the portal is failing and calls are paused for a short cool-off (portal_circuit_open, with Retry-After), or the local index has never been synced (index_not_synced).",
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+                  "description": "This service could not log in to the portal (portal_auth_failed), the portal is failing and calls are paused for a short cool-off (portal_circuit_open, with Retry-After), or the local index has never been synced (index_not_synced).",
                   "type": "object",
                   "required": [
                     "error"
@@ -1821,10 +1958,23 @@
         "tags": [
           "network"
         ],
-        "description": "Inconsistencies found while building the tree: conflicting parents, duplicate codes with different names, orphan meters, disagreements with the transformer list, and meters in portal search that the export lacks. Nothing is dropped; each finding is reported. Slower than the other network routes: it also lists every meter from portal search (memoised for a minute).",
+        "description": "Inconsistencies found while building the tree: conflicting parents, duplicate codes with different names, orphan meters, disagreements with the transformer list, and meters in portal search that the export lacks. Nothing is dropped; each finding is reported. Slower than the other network routes: it also lists every meter from portal search (cached).",
         "responses": {
           "200": {
             "description": "The findings.",
+            "headers": {
+              "x-cache": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "HIT",
+                    "MISS",
+                    "STALE"
+                  ]
+                },
+                "description": "HIT = served from cache; MISS = fetched from the portal now; STALE = the portal failed and an older cached copy is served (body has stale: true)."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1853,11 +2003,11 @@
             }
           },
           "503": {
-            "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+            "description": "This service could not log in to the portal (portal_auth_failed), the portal is failing and calls are paused for a short cool-off (portal_circuit_open, with Retry-After), or the local index has never been synced (index_not_synced).",
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+                  "description": "This service could not log in to the portal (portal_auth_failed), the portal is failing and calls are paused for a short cool-off (portal_circuit_open, with Retry-After), or the local index has never been synced (index_not_synced).",
                   "type": "object",
                   "required": [
                     "error"
@@ -1915,6 +2065,19 @@
         "responses": {
           "200": {
             "description": "The node.",
+            "headers": {
+              "x-cache": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "HIT",
+                    "MISS",
+                    "STALE"
+                  ]
+                },
+                "description": "HIT = served from cache; MISS = fetched from the portal now; STALE = the portal failed and an older cached copy is served (body has stale: true)."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1981,11 +2144,11 @@
             }
           },
           "503": {
-            "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+            "description": "This service could not log in to the portal (portal_auth_failed), the portal is failing and calls are paused for a short cool-off (portal_circuit_open, with Retry-After), or the local index has never been synced (index_not_synced).",
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+                  "description": "This service could not log in to the portal (portal_auth_failed), the portal is failing and calls are paused for a short cool-off (portal_circuit_open, with Retry-After), or the local index has never been synced (index_not_synced).",
                   "type": "object",
                   "required": [
                     "error"
@@ -2066,6 +2229,19 @@
         "responses": {
           "200": {
             "description": "A page of meters.",
+            "headers": {
+              "x-cache": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "HIT",
+                    "MISS",
+                    "STALE"
+                  ]
+                },
+                "description": "HIT = served from cache; MISS = fetched from the portal now; STALE = the portal failed and an older cached copy is served (body has stale: true)."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -2132,11 +2308,11 @@
             }
           },
           "503": {
-            "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+            "description": "This service could not log in to the portal (portal_auth_failed), the portal is failing and calls are paused for a short cool-off (portal_circuit_open, with Retry-After), or the local index has never been synced (index_not_synced).",
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+                  "description": "This service could not log in to the portal (portal_auth_failed), the portal is failing and calls are paused for a short cool-off (portal_circuit_open, with Retry-After), or the local index has never been synced (index_not_synced).",
                   "type": "object",
                   "required": [
                     "error"
@@ -2191,11 +2367,11 @@
             }
           },
           "503": {
-            "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+            "description": "This service could not log in to the portal (portal_auth_failed), the portal is failing and calls are paused for a short cool-off (portal_circuit_open, with Retry-After), or the local index has never been synced (index_not_synced).",
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).",
+                  "description": "This service could not log in to the portal (portal_auth_failed), the portal is failing and calls are paused for a short cool-off (portal_circuit_open, with Retry-After), or the local index has never been synced (index_not_synced).",
                   "type": "object",
                   "required": [
                     "error"

@@ -6,6 +6,7 @@ import {
   PortalParseError,
   PortalUnavailable,
 } from '../src/portal/errors.js';
+import { CACHE_STATE, DEFAULT_CACHE_OPTIONS } from '../src/cache.js';
 import { createMeterService } from '../src/service.js';
 import { createRecordingLogger, fixtureBody } from './helpers.js';
 
@@ -63,6 +64,7 @@ async function createFakePortal(overrides = {}) {
       calls.export.push(number);
       return { ...exportBody, total: 3 };
     },
+    circuitState: () => 'closed',
     async close() {},
     ...overrides,
   };
@@ -296,9 +298,13 @@ describe('consumption', () => {
 });
 
 describe('checkPortal', () => {
-  test('reachable', async () => {
+  test('reachable, with circuit and cache state', async () => {
     const { service } = await setup();
-    assert.equal((await service.checkPortal()).portal, 'reachable');
+    const health = await service.checkPortal();
+    assert.equal(health.status, 'ok');
+    assert.equal(health.portal, 'reachable');
+    assert.equal(health.circuit, 'closed');
+    assert.deepEqual(health.cache, { entries: 0, hits: 0, misses: 0, stale: 0 });
   });
 
   test('portal errors become "degraded", not exceptions', async () => {
@@ -310,24 +316,43 @@ describe('checkPortal', () => {
     assert.deepEqual(await service.checkPortal(), {
       status: 'degraded',
       portal: 'unreachable',
+      circuit: 'closed',
+      cache: { entries: 0, hits: 0, misses: 0, stale: 0 },
       fetched_at: NOW.toISOString(),
     });
   });
+
+  test('a circuit that is not closed is degraded even if the probe worked', async () => {
+    const { service } = await setup({ circuitState: () => 'half-open' });
+    const health = await service.checkPortal();
+    assert.equal(health.portal, 'reachable');
+    assert.equal(health.circuit, 'half-open');
+    assert.equal(health.status, 'degraded');
+  });
+
+  test('always asks the portal, even when transformers are cached', async () => {
+    const { service, portalClient } = await setup();
+    await service.listTransformers({ limit: 5, offset: 0 });
+    await service.checkPortal();
+    assert.deepEqual(portalClient.calls.dts, [1, 1]);
+  });
 });
 
-describe('export index memo', () => {
-  test('is reused within the TTL and re-pulled after it', async () => {
+const MIN = 60_000;
+
+describe('export cache', () => {
+  test('is reused within its TTL and re-pulled after it', async () => {
     let clock = NOW.getTime();
     const { service, portalClient } = await setup(undefined, { now: () => new Date(clock) });
     await service.getMeter('J100000');
     await service.getMeter('J100000');
     assert.deepEqual(portalClient.calls.export, [1]);
 
-    clock += 59_999;
+    clock += 10 * MIN - 1;
     await service.getMeter('J100000');
     assert.deepEqual(portalClient.calls.export, [1]);
 
-    clock += 1; // exactly the TTL
+    clock += 1; // exactly the export TTL
     await service.getMeter('J100000');
     assert.deepEqual(portalClient.calls.export, [1, 1]);
   });
@@ -352,5 +377,177 @@ describe('export index memo', () => {
     failing = false;
     assert.ok((await service.getMeter('J100000')).hierarchy);
     assert.deepEqual(portalClient.calls.export, [1, 1]);
+  });
+});
+
+describe('response caching', () => {
+  const state = (response) => response[CACHE_STATE];
+
+  /** A service with a movable clock and counters for the geo and energy reads. */
+  async function cachedSetup(overrides, serviceOptions) {
+    const clock = { ms: NOW.getTime() };
+    const counts = { geo: 0, energy: 0 };
+    const geo = await fixtureBody('meter-geo');
+    const energy = await fixtureBody('meter-energy');
+    const result = await setup(
+      {
+        async fetchGeo() {
+          counts.geo += 1;
+          return geo;
+        },
+        async fetchEnergy() {
+          counts.energy += 1;
+          return energy;
+        },
+        ...overrides,
+      },
+      { now: () => new Date(clock.ms), ...serviceOptions },
+    );
+    return { ...result, clock, counts };
+  }
+
+  /** Energy reads that succeed until `control.failing` is set. */
+  async function flakyEnergy() {
+    const energy = await fixtureBody('meter-energy');
+    const control = { failing: false, gone: false };
+    return {
+      control,
+      async fetchEnergy() {
+        if (control.gone) throw new PortalNotFound('gone');
+        if (control.failing) throw new PortalUnavailable('portal down');
+        return energy;
+      },
+    };
+  }
+
+  test('meter detail: MISS, then HIT that keeps the original fetched_at', async () => {
+    const { service, clock, counts } = await cachedSetup();
+    assert.equal(state(await service.getMeter('J100000')), 'MISS');
+    clock.ms += 4 * MIN;
+    const second = await service.getMeter('J100000');
+    assert.equal(state(second), 'HIT');
+    assert.equal(counts.geo, 1);
+    assert.equal(second.fetched_at, NOW.toISOString(), 'fetched_at is when the data was fetched');
+    assert.equal(second.stale, undefined);
+  });
+
+  test('each kind has its own TTL: energy 2 min, meter 5 min', async () => {
+    const { service, clock, counts } = await cachedSetup();
+    await service.getMeter('J100000');
+    await service.getConsumption('J100000');
+    clock.ms += 2 * MIN;
+    assert.equal(state(await service.getMeter('J100000')), 'HIT');
+    assert.equal(state(await service.getConsumption('J100000')), 'MISS');
+    clock.ms += 3 * MIN;
+    assert.equal(state(await service.getMeter('J100000')), 'MISS');
+    assert.deepEqual(counts, { geo: 2, energy: 2 });
+  });
+
+  test('consumption and daily consumption share one cached series', async () => {
+    const { service, counts } = await cachedSetup();
+    await service.getConsumption('J100000');
+    assert.equal(state(await service.getDailyConsumption('J100000')), 'HIT');
+    assert.equal(counts.energy, 1);
+  });
+
+  test('transformer pages are cached per page', async () => {
+    const { service, portalClient } = await cachedSetup();
+    await service.listTransformers({ limit: 5, offset: 18 }); // pages 1 and 2
+    assert.equal(state(await service.listTransformers({ limit: 5, offset: 18 })), 'HIT');
+    await service.listTransformers({ limit: 5, offset: 0 });
+    assert.deepEqual(portalClient.calls.dts, [1, 2]);
+  });
+
+  test('the live meter list is not cached', async () => {
+    const { service, portalClient } = await cachedSetup();
+    await service.listMeters({ limit: 5, offset: 0 });
+    await service.listMeters({ limit: 5, offset: 0 });
+    assert.deepEqual(portalClient.calls.search, [1, 1]);
+  });
+
+  test('8 concurrent requests for one meter make one upstream call', async () => {
+    const { service, counts } = await cachedSetup();
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => service.getConsumption('J100000')),
+    );
+    assert.equal(counts.energy, 1);
+    assert.ok(results.every((result) => state(result) === 'MISS'));
+  });
+
+  test('a failed refresh serves the expired copy as STALE, honestly marked', async () => {
+    const { fetchEnergy, control } = await flakyEnergy();
+    const { service, clock, logger } = await cachedSetup({ fetchEnergy });
+    await service.getConsumption('J100000');
+    control.failing = true;
+    clock.ms += 2 * MIN; // expired, but inside the 15 minute grace
+    const stale = await service.getConsumption('J100000');
+    assert.equal(state(stale), 'STALE');
+    assert.equal(stale.stale, true);
+    assert.equal(
+      stale.fetched_at,
+      NOW.toISOString(),
+      'still says when the data was really fetched',
+    );
+    assert.equal(stale.data.length, 337);
+    assert.ok(
+      logger.lines.some(
+        (line) => line.args[1] === 'serving stale cache entry after a failed refresh',
+      ),
+    );
+  });
+
+  test('past the grace window the portal error is returned, not old data', async () => {
+    const { fetchEnergy, control } = await flakyEnergy();
+    const { service, clock } = await cachedSetup({ fetchEnergy });
+    await service.getConsumption('J100000');
+    control.failing = true;
+    clock.ms += 2 * MIN + 15 * MIN; // TTL + grace
+    await assert.rejects(service.getConsumption('J100000'), PortalUnavailable);
+  });
+
+  test('a hard failure with nothing cached still errors', async () => {
+    const { fetchEnergy, control } = await flakyEnergy();
+    control.failing = true;
+    const { service } = await cachedSetup({ fetchEnergy });
+    await assert.rejects(service.getConsumption('J100000'), PortalUnavailable);
+  });
+
+  test('a 404 is never answered from stale data', async () => {
+    const { fetchEnergy, control } = await flakyEnergy();
+    const { service, clock } = await cachedSetup({ fetchEnergy });
+    await service.getConsumption('J100000');
+    control.gone = true;
+    clock.ms += 3 * MIN;
+    await assert.rejects(service.getConsumption('J100000'), PortalNotFound);
+  });
+
+  test('an export outage serves the stale export, and the whole response says STALE', async () => {
+    const exportBody = await fixtureBody('export-page1');
+    let failing = false;
+    const { service, clock } = await cachedSetup({
+      async fetchExport() {
+        if (failing) throw new PortalUnavailable('export down');
+        return { ...exportBody, total: 3 };
+      },
+    });
+    await service.getMeter('J100000');
+    failing = true;
+    clock.ms += 11 * MIN; // meter (5 min) and export (10 min) both expired
+    const meter = await service.getMeter('J100000');
+    assert.equal(state(meter), 'STALE');
+    assert.equal(meter.stale, true);
+    assert.equal(meter.hierarchy.zone.code, 'Z-01', 'hierarchy comes from the stale export');
+    assert.equal(meter.fetched_at, NOW.toISOString(), 'oldest part wins');
+  });
+
+  test('a TTL of 0 turns caching off for that kind', async () => {
+    const cacheOptions = {
+      ...DEFAULT_CACHE_OPTIONS,
+      ttlMs: { ...DEFAULT_CACHE_OPTIONS.ttlMs, energy: 0 },
+    };
+    const { service, counts } = await cachedSetup(undefined, { cacheOptions });
+    await service.getConsumption('J100000');
+    await service.getConsumption('J100000');
+    assert.equal(counts.energy, 2);
   });
 });

@@ -33,10 +33,17 @@ const summaryProperties = {
 };
 const summaryRequired = Object.keys(summaryProperties);
 
+const stale = {
+  type: 'boolean',
+  description:
+    'Present and true only when the portal failed and this is an older cached copy; fetched_at then says how old. See the X-Cache header.',
+};
+
 const hierarchyLevels = ['zone', 'circle', 'division', 'subdivision', 'substation', 'feeder', 'dt'];
 
 const networkIssueTypes = [
   'orphan_meter',
+  'incomplete_hierarchy',
   'conflicting_parent',
   'duplicate_code_name',
   'level_conflict',
@@ -99,6 +106,9 @@ export const sharedSchemas = [
   {
     $id: 'HierarchyNode',
     type: 'object',
+    nullable: true,
+    description:
+      'One level of the chain. null when the export gave this level no usable code (see incomplete_hierarchy in /v1/network/issues).',
     additionalProperties: false,
     required: ['name', 'code'],
     properties: { name: { type: 'string' }, code: { type: 'string' } },
@@ -108,7 +118,7 @@ export const sharedSchemas = [
     type: 'object',
     nullable: true,
     description:
-      'Position in the network, top to bottom. null when the meter is not in the portal export.',
+      'Position in the network, top to bottom. null when the meter is not in the portal export; an individual level is null when the export gave it no usable code.',
     additionalProperties: false,
     required: hierarchyLevels,
     properties: Object.fromEntries(
@@ -135,6 +145,7 @@ export const sharedSchemas = [
       },
       geo: { $ref: 'Geo#' },
       hierarchy: { $ref: 'Hierarchy#' },
+      stale,
       fetched_at: fetchedAt,
     },
   },
@@ -147,6 +158,7 @@ export const sharedSchemas = [
       data: { type: 'array', items: { $ref: 'MeterSummary#' } },
       ...paginationProperties,
       ...sourceProperties,
+      stale,
       fetched_at: {
         ...fetchedAt,
         description: 'portal source only: when this service fetched the data (UTC, ISO 8601).',
@@ -260,6 +272,7 @@ export const sharedSchemas = [
     properties: {
       meterId: { type: 'string' },
       data: { type: 'array', items: { $ref: 'ConsumptionReading#' } },
+      stale,
       fetched_at: fetchedAt,
     },
   },
@@ -307,6 +320,7 @@ export const sharedSchemas = [
           'Number of anomalous days left out (see skipped). The first day, which only anchors the next, and a final day that ends before 23:30 are expected and not counted.',
       },
       skipped: { type: 'array', items: { $ref: 'SkippedDay#' } },
+      stale,
       fetched_at: fetchedAt,
     },
   },
@@ -370,6 +384,7 @@ export const sharedSchemas = [
     properties: {
       data: { type: 'array', items: { $ref: 'NetworkNode#' } },
       total: { type: 'integer', minimum: 0 },
+      stale,
       fetched_at: fetchedAt,
     },
   },
@@ -386,6 +401,7 @@ export const sharedSchemas = [
         items: { $ref: 'NetworkNode#' },
         description: 'From the zone down to this node, inclusive.',
       },
+      stale,
       fetched_at: fetchedAt,
     },
   },
@@ -399,7 +415,7 @@ export const sharedSchemas = [
         type: 'string',
         enum: networkIssueTypes,
         description:
-          'orphan_meter: dtCode disagrees with the hierarchy, or the meter fits no node. conflicting_parent: a code sits under two parents. duplicate_code_name: a code has two names. level_conflict: a code is used at two levels. meter_not_in_export: in portal search, absent from the export. dt_not_in_transformers / transformer_without_meters / feeder_mismatch: export and /portal/dts disagree.',
+          'orphan_meter: dtCode disagrees with the hierarchy, or the meter fits no node. incomplete_hierarchy: the meter IS in the export but one or more levels have no usable code; it sits at the deepest valid level (or in no node if the zone is missing). conflicting_parent: a code sits under two parents. duplicate_code_name: a code has two names. level_conflict: a code is used at two levels. meter_not_in_export: in portal search, absent from the export altogether. dt_not_in_transformers / transformer_without_meters / feeder_mismatch: export and /portal/dts disagree.',
       },
       code: { type: 'string', nullable: true, description: 'Node code concerned, if any.' },
       meterId: { type: 'string', nullable: true, description: 'Meter concerned, if any.' },
@@ -414,6 +430,7 @@ export const sharedSchemas = [
     properties: {
       data: { type: 'array', items: { $ref: 'NetworkIssue#' } },
       total: { type: 'integer', minimum: 0 },
+      stale,
       fetched_at: fetchedAt,
     },
   },
@@ -421,14 +438,37 @@ export const sharedSchemas = [
     $id: 'Health',
     type: 'object',
     additionalProperties: false,
-    required: ['status', 'portal', 'fetched_at'],
+    required: ['status', 'portal', 'circuit', 'cache', 'fetched_at'],
     properties: {
       status: {
         type: 'string',
         enum: ['ok', 'degraded'],
-        description: 'degraded = this service is up but the portal is not.',
+        description:
+          'degraded = this service is up but the portal is unreachable or the circuit breaker is not closed.',
       },
       portal: { type: 'string', enum: ['reachable', 'unreachable'] },
+      circuit: {
+        type: 'string',
+        enum: ['closed', 'open', 'half-open'],
+        description:
+          'Circuit breaker: open = recent consecutive portal failures, calls fail fast for a short cool-off; half-open = the next call is a probe.',
+      },
+      cache: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['entries', 'hits', 'misses', 'stale'],
+        description: 'Live-read cache counters since start.',
+        properties: {
+          entries: { type: 'integer', minimum: 0 },
+          hits: { type: 'integer', minimum: 0 },
+          misses: { type: 'integer', minimum: 0 },
+          stale: {
+            type: 'integer',
+            minimum: 0,
+            description: 'Stale copies served after a failed refresh.',
+          },
+        },
+      },
       fetched_at: fetchedAt,
     },
   },
@@ -465,10 +505,24 @@ export const errorResponses = {
     'The portal failed or returned something unreadable (portal_unavailable, portal_bad_response).',
   ),
   503: errorResponse(
-    'This service could not log in to the portal (portal_auth_failed), or the local index has never been synced (index_not_synced).',
+    'This service could not log in to the portal (portal_auth_failed), the portal is failing and calls are paused for a short cool-off (portal_circuit_open, with Retry-After), or the local index has never been synced (index_not_synced).',
   ),
   504: errorResponse('The portal timed out (portal_timeout).'),
 };
+
+/** A 200 response for a cached read: documents the X-Cache header. */
+export const cachedOk = (ref, description) => ({
+  description,
+  $ref: ref,
+  headers: {
+    'x-cache': {
+      type: 'string',
+      enum: ['HIT', 'MISS', 'STALE'],
+      description:
+        'HIT = served from cache; MISS = fetched from the portal now; STALE = the portal failed and an older cached copy is served (body has stale: true).',
+    },
+  },
+});
 
 export const limitQuery = {
   type: 'integer',

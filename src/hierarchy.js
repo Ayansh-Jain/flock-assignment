@@ -38,10 +38,16 @@ function normaliseName(name) {
  * @property {string[]} aliases Raw spellings of the code that differ from `code`.
  * @property {string[]} childCodes
  * @property {number} meterCount Meters placed at or below this node.
- * @property {object[]} meters Meter summaries; only filled on `dt` nodes.
+ * @property {object[]} meters Meter summaries placed directly at this node (normally a `dt`;
+ *   higher up only for meters whose chain below that node is incomplete).
  *
  * @typedef {{ type: string, code: string | null, meterId: string | null, detail: string }} NetworkIssue
  */
+
+/** A level is usable when the export gave it a non-blank code. */
+function isUsable(entry) {
+  return entry !== null && entry !== undefined && String(entry.code).trim() !== '';
+}
 
 function summarise(meter) {
   const { meterId, serialNo, make, phaseType, installStatus, dtCode } = meter;
@@ -79,10 +85,6 @@ export function buildNetwork({ exportMeters, transformers }) {
   function placeLevel(level, rawCode, rawName, parent) {
     const code = normaliseCode(rawCode);
     const name = normaliseName(rawName);
-    if (code === '') {
-      report('orphan_meter', { detail: `blank ${level} code in the export` });
-      return null;
-    }
     let node = nodes.get(code);
     if (!node) {
       node = {
@@ -124,17 +126,35 @@ export function buildNetwork({ exportMeters, transformers }) {
 
   for (const meter of exportMeters) {
     let parent = null;
+    let conflicted = false;
+    const missing = HIERARCHY_LEVELS.filter((level) => !isUsable(meter.hierarchy[level]));
+    // Walk down until the first level with no usable code: nothing below it can be attached.
     for (const level of HIERARCHY_LEVELS) {
+      if (!isUsable(meter.hierarchy[level])) break;
       const { code, name } = meter.hierarchy[level];
-      parent = placeLevel(level, code, name, parent);
-      if (!parent) break;
+      const placed = placeLevel(level, code, name, parent);
+      if (!placed) {
+        conflicted = true;
+        parent = null;
+        break;
+      }
+      parent = placed;
+    }
+    if (missing.length > 0) {
+      report('incomplete_hierarchy', {
+        code: parent?.code ?? null,
+        meterId: meter.meterId,
+        detail: `no usable code for ${missing.join(', ')}; ${parent ? `placed at ${parent.level} ${parent.code}` : 'in no node'}`,
+      });
     }
     if (!parent) {
       unplaced.push(summarise(meter));
-      report('orphan_meter', {
-        meterId: meter.meterId,
-        detail: 'its hierarchy chain conflicts with the rest of the export, so it is in no node',
-      });
+      if (conflicted) {
+        report('orphan_meter', {
+          meterId: meter.meterId,
+          detail: 'its hierarchy chain conflicts with the rest of the export, so it is in no node',
+        });
+      }
       continue;
     }
     parent.meters.push(summarise(meter));
@@ -144,7 +164,7 @@ export function buildNetwork({ exportMeters, transformers }) {
       visited.add(node.code);
       node.meterCount += 1;
     }
-    if (normaliseCode(meter.dtCode) !== parent.code) {
+    if (parent.level === 'dt' && normaliseCode(meter.dtCode) !== parent.code) {
       report('orphan_meter', {
         meterId: meter.meterId,
         detail: `dtCode ${meter.dtCode} does not match the DT its hierarchy places it under (${parent.code}); placed by hierarchy`,

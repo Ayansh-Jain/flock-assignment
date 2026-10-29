@@ -9,7 +9,12 @@ import { runSync } from '../src/sync.js';
 
 const print = (level) => (fields, message) =>
   console.log(JSON.stringify({ level, msg: message ?? fields, ...(message && fields) }));
-const logger = { info: print('info'), warn: print('warn'), error: print('error') };
+const logger = {
+  debug: () => {}, // per-request portal chatter; not useful in a progress printout
+  info: print('info'),
+  warn: print('warn'),
+  error: print('error'),
+};
 
 let portalClient;
 let db;

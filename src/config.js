@@ -1,4 +1,5 @@
 import envSchema from 'env-schema';
+import { DEFAULT_CACHE_OPTIONS } from './cache.js';
 
 const schema = {
   type: 'object',
@@ -15,6 +16,30 @@ const schema = {
       type: 'string',
       enum: ['development', 'production', 'test'],
       default: 'production',
+    },
+    BREAKER_THRESHOLD: { type: 'integer', minimum: 1, default: 5 },
+    BREAKER_COOLOFF_MS: { type: 'integer', minimum: 1, default: 30000 },
+    CACHE_MAX_ENTRIES: { type: 'integer', minimum: 1, default: DEFAULT_CACHE_OPTIONS.maxEntries },
+    CACHE_STALE_GRACE_MS: {
+      type: 'integer',
+      minimum: 0,
+      default: DEFAULT_CACHE_OPTIONS.staleGraceMs,
+    },
+    CACHE_TTL_METER_MS: { type: 'integer', minimum: 0, default: DEFAULT_CACHE_OPTIONS.ttlMs.meter },
+    CACHE_TTL_ENERGY_MS: {
+      type: 'integer',
+      minimum: 0,
+      default: DEFAULT_CACHE_OPTIONS.ttlMs.energy,
+    },
+    CACHE_TTL_TRANSFORMERS_MS: {
+      type: 'integer',
+      minimum: 0,
+      default: DEFAULT_CACHE_OPTIONS.ttlMs.transformers,
+    },
+    CACHE_TTL_EXPORT_MS: {
+      type: 'integer',
+      minimum: 0,
+      default: DEFAULT_CACHE_OPTIONS.ttlMs.export,
     },
     DB_PATH: { type: 'string', minLength: 1, default: 'data/urja.db' },
     HOST: { type: 'string', default: '127.0.0.1' },
@@ -47,6 +72,9 @@ function loadEnvFileIfPresent() {
  * @returns {Readonly<{
  *   PORTAL_BASE_URL: string, PORTAL_USERNAME: string, PORTAL_PASSWORD: string,
  *   REQUEST_TIMEOUT_MS: number, MAX_CONCURRENCY: number, MAX_RETRIES: number,
+ *   BREAKER_THRESHOLD: number, BREAKER_COOLOFF_MS: number, CACHE_MAX_ENTRIES: number,
+ *   CACHE_STALE_GRACE_MS: number, CACHE_TTL_METER_MS: number, CACHE_TTL_ENERGY_MS: number,
+ *   CACHE_TTL_TRANSFORMERS_MS: number, CACHE_TTL_EXPORT_MS: number,
  *   NODE_ENV: string, DB_PATH: string, HOST: string, PORT: number, LOG_LEVEL: string }>}
  */
 export function loadConfig(overrides) {

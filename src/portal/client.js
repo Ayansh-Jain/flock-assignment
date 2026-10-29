@@ -2,6 +2,7 @@ import { createHmac } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import pLimit from 'p-limit';
 import { CookieJar } from 'tough-cookie';
+import { createBreaker } from './breaker.js';
 import {
   PortalAuthError,
   PortalError,
@@ -62,6 +63,7 @@ function isTransientNetworkError(error) {
  * @property {(meterId: string) => Promise<unknown>} fetchEnergy
  * @property {(args?: { page?: number }) => Promise<unknown>} fetchTransformers
  * @property {(args?: { page?: number }) => Promise<unknown>} fetchExport
+ * @property {() => 'closed' | 'open' | 'half-open'} circuitState
  * @property {() => Promise<void>} close
  */
 
@@ -92,6 +94,11 @@ export function createPortalClient({
   let generation = 0; // bumped on every successful login so only one caller resets a stale session
   let loginPromise = null;
   let closed = false;
+  const breaker = createBreaker({
+    threshold: config.BREAKER_THRESHOLD,
+    cooloffMs: config.BREAKER_COOLOFF_MS,
+    now,
+  });
 
   function backoffMs(attempt) {
     // Full jitter: random wait up to an exponentially growing ceiling.
@@ -123,7 +130,7 @@ export function createPortalClient({
   }
 
   /** send() plus retries for timeouts, network errors, 5xx and 429. Logs without secrets. */
-  async function sendWithRetry(method, path, options) {
+  async function retrying(method, path, options) {
     let lastCause;
     for (let attempt = 0; attempt <= config.MAX_RETRIES; attempt += 1) {
       const started = performance.now();
@@ -171,6 +178,27 @@ export function createPortalClient({
       }
     }
     throw new PortalUnavailable(`Portal unavailable for ${path}`, { cause: lastCause });
+  }
+
+  /**
+   * retrying() behind the circuit breaker. Only a request that still failed after its retries
+   * counts against the portal; any answer (even 404 or 401) shows the portal is up.
+   */
+  async function sendWithRetry(method, path, options) {
+    breaker.beforeRequest();
+    try {
+      const result = await retrying(method, path, options);
+      breaker.recordSuccess();
+      return result;
+    } catch (error) {
+      if (error instanceof PortalUnavailable) {
+        breaker.recordFailure();
+        if (breaker.state() !== 'closed') logger.warn({ path }, 'portal circuit opened');
+      } else {
+        breaker.recordSuccess();
+      }
+      throw error;
+    }
   }
 
   /** POST /login (SvelteKit form action). Success is body type "redirect", decided from the body. */
@@ -303,6 +331,7 @@ export function createPortalClient({
       return getJson(`/portal/dts?${new URLSearchParams({ page })}`);
     },
     fetchExport,
+    circuitState: breaker.state,
     async close() {
       closed = true;
       limit.clearQueue();

@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import Fastify from 'fastify';
+import { CACHE_STATE } from './cache.js';
 import { registerErrorHandlers } from './error-handler.js';
 import { createPortalClient } from './portal/client.js';
 import { createIndexService } from './index-service.js';
@@ -35,6 +36,19 @@ function buildLoggerOptions(config) {
   };
 }
 
+function cacheOptionsFrom(config) {
+  return {
+    maxEntries: config.CACHE_MAX_ENTRIES,
+    staleGraceMs: config.CACHE_STALE_GRACE_MS,
+    ttlMs: {
+      meter: config.CACHE_TTL_METER_MS,
+      energy: config.CACHE_TTL_ENERGY_MS,
+      transformers: config.CACHE_TTL_TRANSFORMERS_MS,
+      export: config.CACHE_TTL_EXPORT_MS,
+    },
+  };
+}
+
 /**
  * Build the Fastify app. Used by the server, the OpenAPI exporter and the tests.
  *
@@ -57,6 +71,7 @@ export async function buildApp({ config, service, indexService, logger }) {
     createMeterService({
       portalClient: createPortalClient({ config, logger: app.log }),
       logger: app.log,
+      cacheOptions: cacheOptionsFrom(config),
     });
   const localIndex = indexService ?? createIndexService({ dbPath: config.DB_PATH });
   app.decorate('service', meterService);
@@ -64,6 +79,12 @@ export async function buildApp({ config, service, indexService, logger }) {
   app.addHook('onClose', async () => {
     await meterService.close?.();
     await localIndex.close();
+  });
+  // Cached reads carry their state on a symbol (see service.js); expose it as X-Cache.
+  app.addHook('preSerialization', async (request, reply, payload) => {
+    const cacheState = payload?.[CACHE_STATE];
+    if (cacheState) reply.header('x-cache', cacheState);
+    return payload;
   });
   app.addHook('onSend', async (request, reply, payload) => {
     reply.header('x-request-id', request.id);

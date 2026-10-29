@@ -242,18 +242,24 @@ export function parseTransformers(body) {
   };
 }
 
+/**
+ * Observed live: some export rows have an empty code at one or more levels. Those rows are kept
+ * and the unusable level becomes null (the same "unknown" the API uses for a meter missing from the
+ * export). A level is usable only if it is an object with a non-empty string code and a string
+ * name. A `hierarchy` that is not an object at all is still a malformed row.
+ */
 function parseHierarchy(label, raw) {
   const hierarchy = expectObject(label, raw, 'hierarchy');
   return Object.fromEntries(
     HIERARCHY_LEVELS.map((level) => {
-      const node = expectObject(label, hierarchy[level], `hierarchy.${level}`);
-      return [
-        level,
-        {
-          name: expectString(label, node.name, `hierarchy.${level}.name`),
-          code: expectNonEmptyString(label, node.code, `hierarchy.${level}.code`),
-        },
-      ];
+      const node = hierarchy[level];
+      const usable =
+        node !== null &&
+        typeof node === 'object' &&
+        typeof node.name === 'string' &&
+        typeof node.code === 'string' &&
+        node.code.trim() !== '';
+      return [level, usable ? { name: node.name.trim(), code: node.code.trim() } : null];
     }),
   );
 }

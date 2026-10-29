@@ -257,7 +257,7 @@ describe('parseExport', () => {
 
   test('skips a bad row, keeps the rest, and reports it', async () => {
     const body = await fixtureBody('export-page1');
-    delete body.data[0].hierarchy.substation;
+    body.data[0].hierarchy = null;
     const { meters, total, skipped } = parseExport(body);
     assert.equal(total, 403);
     assert.deepEqual(
@@ -267,7 +267,23 @@ describe('parseExport', () => {
     assert.equal(skipped.count, 1);
     assert.equal(skipped.samples[0].index, 0);
     assert.equal(skipped.samples[0].meterId, 'J100000');
-    assert.match(skipped.samples[0].reason, /^\/portal\/export: .*hierarchy\.substation/);
+    assert.match(skipped.samples[0].reason, /^\/portal\/export: hierarchy is not an object/);
+  });
+
+  test('keeps a row whose nested code is empty, with that level null (seen live)', async () => {
+    const body = await fixtureBody('export-page1');
+    body.data[0].hierarchy.circle.code = '';
+    body.data[1].hierarchy.feeder.code = '   ';
+    delete body.data[2].hierarchy.substation;
+    const { meters, skipped } = parseExport(body);
+    assert.equal(skipped.count, 0);
+    assert.equal(meters.length, 3);
+    const [first, second, third] = meters.map((m) => m.hierarchy);
+    assert.equal(first.circle, null);
+    assert.equal(first.zone.code, 'Z-01', 'valid levels are kept');
+    assert.equal(first.dt.code, 'DT-001');
+    assert.equal(second.feeder, null);
+    assert.equal(third.substation, null);
   });
 
   test('counts every skipped row but keeps only a small sample', async () => {
